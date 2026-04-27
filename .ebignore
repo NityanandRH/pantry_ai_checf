@@ -1,0 +1,8 @@
+docker-compose.yml
+docker-compose.yml.bak
+.env
+.venv
+__pycache__
+*.pyc
+frontend/node_modules
+pantry.db

@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+*.csv
+credential.txt
+trust-policy.json
+instance-trust.json
+apprunner.json
+.venv/
+venv/
+__pycache__/
+*.pyc
+pantry.db
+.elasticbeanstalk/
+.idea/
+node_modules/
+frontend/dist/
