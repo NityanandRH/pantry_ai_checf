@@ -23,6 +23,7 @@ from PIL import Image
 from database import get_db, init_db
 from models import Ingredient, Recipe, Favourite, Feedback, UserRecipe, User, AppFeedback
 from auth import get_current_user, require_admin
+from admin import router as admin_router
 from prompts import (
     RECIPE_AGENT_TOOLS, AGENT_SYSTEM,
     MODE_A_FALLBACK_SYSTEM, MODE_B_SYSTEM,
@@ -51,6 +52,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(admin_router)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 

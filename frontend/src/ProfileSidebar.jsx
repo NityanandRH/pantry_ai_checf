@@ -60,12 +60,15 @@ export default function ProfileSidebar({ user, isOpen, onClose, onLoadRecipe, on
   const [fbError, setFbError]       = useState("")
 
   // Load recipe history when Recipes tab is opened
+  // Use histLoading as the guard instead of history.length so it reloads if user
+  // generates a new recipe and reopens the sidebar
+  const [histLoaded, setHistLoaded] = useState(false)
   useEffect(() => {
-    if (activeTab === "recipes" && isOpen && history.length === 0) {
+    if (activeTab === "recipes" && isOpen && !histLoaded) {
       setHistLoading(true)
       api.get("/recipe/history?limit=30")
-        .then(r => setHistory(r.data))
-        .catch(() => {})
+        .then(r => { setHistory(r.data || []); setHistLoaded(true) })
+        .catch(() => setHistLoaded(true))
         .finally(() => setHistLoading(false))
     }
   }, [activeTab, isOpen])
@@ -219,7 +222,7 @@ export default function ProfileSidebar({ user, isOpen, onClose, onLoadRecipe, on
                     Upgrade to Pro ✨
                   </p>
                   <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-                    Get unlimited recipe generation, meal planner and more for ₹99/mo.
+                    This tiny amount you'd spend anywhere — but here it saves your day with unlimited recipes, smart pantry management, and a personal chef in your pocket. ₹99/mo.
                   </p>
                   <button className="btn-orange mt-3 text-xs" style={{ padding: "0.4rem 1rem" }}>
                     Upgrade now

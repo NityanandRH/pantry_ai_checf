@@ -20,9 +20,10 @@ const BASE_URL = import.meta.env.VITE_API_URL || ""
 const api = axios.create({
   baseURL: BASE_URL,
   timeout: 60000,    // 60s — agent recipe generation can be slow
-  headers: {
-    "Content-Type": "application/json",
-  },
+  // Do NOT set Content-Type here — let axios set it automatically.
+  // For JSON requests axios sets application/json.
+  // For FormData (image uploads) axios sets multipart/form-data with boundary.
+  // Hardcoding application/json breaks file uploads.
 })
 
 // ── Request interceptor: attach JWT ──────────────────────────────────────────
