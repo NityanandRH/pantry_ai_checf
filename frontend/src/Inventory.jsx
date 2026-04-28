@@ -1,5 +1,6 @@
 import { useState, useRef } from "react"
-import axios from "axios"
+import api from "./api"
+
 
 const CATEGORIES = ["spices","lentils","vegetables","fruits","oils","flours","dairy","protein","grains","other"]
 const UNITS      = ["g","kg","ml","litre","pieces","tbsp","tsp","cup","bunch","packet"]
@@ -51,7 +52,7 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
     if (!form.name.trim()) { flash("Name is required","err"); return }
     setSaving(true)
     try {
-      await axios.post(`${API}/inventory`, {
+      await api.post(`/inventory`, {
         name: form.name.trim(), category: form.category,
         quantity: form.quantity ? parseFloat(form.quantity) : null,
         unit: form.unit || null, expiry_date: form.expiry_date || null,
@@ -68,7 +69,7 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
 
   const saveEdit = async (id) => {
     try {
-      await axios.put(`${API}/inventory/${id}`, {
+      await api.put(`/inventory/${id}`, {
         name:editForm.name.trim(), category:editForm.category,
         quantity:editForm.quantity?parseFloat(editForm.quantity):null,
         unit:editForm.unit||null, expiry_date:editForm.expiry_date||null,
@@ -79,7 +80,7 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
 
   const handleDelete = async (id) => {
     try {
-      await axios.delete(`${API}/inventory/${id}`)
+      await api.delete(`/inventory/${id}`)
       setDelConfirm(null); refreshInventory(); flash("Deleted")
     } catch { flash("Delete failed","err") }
   }
@@ -91,7 +92,7 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
     setScanning(true); setScanned([])
     const fd = new FormData(); fd.append("file", file)
     try {
-      const res = await axios.post(`${API}/inventory/scan-image`, fd)
+      const res = await api.post(`/inventory/scan-image`, fd)
       const items = res.data.extracted_ingredients||[]
       if (!items.length) { flash("No ingredients detected","err"); return }
       setScanned(items)
@@ -105,7 +106,7 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
     if (!toAdd.length) return
     setAddingScanned(true)
     try {
-      await Promise.all(toAdd.map(item => axios.post(`${API}/inventory`, {
+      await Promise.all(toAdd.map(item => api.post(`/inventory`, {
         name:item.name, category:item.category||"other", quantity:null, unit:item.estimated_unit||null,
       })))
       setScanned([]); setSelected({}); refreshInventory()
@@ -119,7 +120,7 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
     setCsvBusy(true)
     const fd = new FormData(); fd.append("file", file)
     try {
-      const res = await axios.post(`${API}/inventory/bulk-import`, fd)
+      const res = await api.post(`/inventory/bulk-import`, fd)
       refreshInventory(); flash(`Imported ${res.data.imported} item${res.data.imported!==1?"s":""}!`)
     } catch { flash("Import failed","err") }
     finally { setCsvBusy(false); if(csvRef.current) csvRef.current.value="" }

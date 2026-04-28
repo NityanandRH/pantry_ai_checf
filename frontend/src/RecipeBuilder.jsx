@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react"
-import axios from "axios"
+import api from "./api"
+
 
 const CUISINES   = ["","Indian","North Indian","South Indian","Italian","Chinese","Continental"]
 const MEAL_TYPES = ["","Breakfast","Lunch","Dinner","Snacks","Dessert"]
@@ -177,7 +178,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
     const term=searchTerm.trim(); if(!term) return
     setSearchBusy(true); setError(null)
     try {
-      const res = await axios.post(`${API}/recipe/search`,{dish_name:term})
+      const res = await api.post(`/recipe/search`,{dish_name:term})
       applyRecipe(res.data, res.data.id, "direct", res.data.ingredient_status, res.data.shopping_list||[])
       setHistory([]); setHistIdx(-1); setAlreadyShown([])
     } catch(e) { setError("Search failed: "+(e.response?.data?.detail||e.message)) }
@@ -190,7 +191,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
     if (!ingredients.length) { setError("Your pantry is empty. Add ingredients first."); return }
     setGenBusy(true); setError(null); setSearchTerm("")
     try {
-      const res = await axios.post(`${API}/recipe/generate`,{
+      const res = await api.post(`/recipe/generate`,{
         filters:{...filters}, already_shown:alreadyShown, session_id:sessionId,
       })
       if (res.data.error) {
@@ -210,7 +211,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
   const handlePrev = async () => {
     if (histIdx<=0) return
     try {
-      const res = await axios.get(`${API}/recipe/${history[histIdx-1].id}`)
+      const res = await api.get(`/recipe/${history[histIdx-1].id}`)
       setHistIdx(histIdx-1); applyRecipe(res.data, history[histIdx-1].id, "pantry")
     } catch { flash("Could not load previous recipe","err") }
   }
@@ -218,7 +219,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
   const validateRecipe = async () => {
     if (!recipeId) return
     try {
-      const res = await axios.get(`${API}/recipe/${recipeId}/validate`)
+      const res = await api.get(`/recipe/${recipeId}/validate`)
       setValidResult(res.data); flash("Checked against current pantry")
     } catch { flash("Validation failed","err") }
   }
@@ -226,7 +227,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
   const toggleFav = async () => {
     if (!recipeId) return
     try {
-      const res = await axios.post(`${API}/recipe/${recipeId}/favourite`)
+      const res = await api.post(`/recipe/${recipeId}/favourite`)
       setIsFav(res.data.is_favourite)
       flash(res.data.is_favourite?"Saved to favourites!":"Removed from favourites")
     } catch { flash("Failed","err") }
@@ -235,7 +236,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
   const submitFeedback = async () => {
     if (!fbRating) { flash("Select a rating first","err"); return }
     try {
-      await axios.post(`${API}/recipe/${recipeId}/feedback`,{rating:fbRating,notes:fbNotes})
+      await api.post(`/recipe/${recipeId}/feedback`,{rating:fbRating,notes:fbNotes})
       setFbDone(true); setShowFeedback(false); flash("Thanks for your feedback!")
     } catch { flash("Failed to save","err") }
   }
@@ -252,7 +253,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
     if (!recipe?.name) return
     setSearchBusy(true); setError(null)
     try {
-      const res = await axios.post(`${API}/recipe/search`,{dish_name:recipe.name})
+      const res = await api.post(`/recipe/search`,{dish_name:recipe.name})
       applyRecipe(res.data, res.data.id, "direct", res.data.ingredient_status, res.data.shopping_list||[])
     } catch { setError("Could not load variations") }
     finally { setSearchBusy(false) }
@@ -263,7 +264,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
     const next=[...chatMsgs,{role:"user",content:msg}]
     setChatMsgs(next); setChatInput(""); setChatBusy(true)
     try {
-      const res = await axios.post(`${API}/recipe/${recipeId}/chat`,{message:msg,chat_history:chatMsgs})
+      const res = await api.post(`/recipe/${recipeId}/chat`,{message:msg,chat_history:chatMsgs})
       setChatMsgs([...next,{role:"assistant",content:res.data.reply}])
     } catch { setChatMsgs([...next,{role:"assistant",content:"Sorry, couldn't answer that. Try again."}]) }
     finally { setChatBusy(false) }
@@ -273,7 +274,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
     if (!urf.name.trim()) { flash("Name is required","err"); return }
     setUrfBusy(true)
     try {
-      await axios.post(`${API}/user-recipes`,{
+      await api.post(`/user-recipes`,{
         name:urf.name.trim(), cuisine:urf.cuisine||null,
         ingredients:urf.ingredients.split("\n").map(s=>s.trim()).filter(Boolean),
         steps:urf.steps.split("\n").map(s=>s.trim()).filter(Boolean),
