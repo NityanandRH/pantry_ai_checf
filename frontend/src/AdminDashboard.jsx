@@ -19,7 +19,212 @@ const TIER_STYLE = {
   credits: { bg:"#1a0d2e", color:"#c4b5fd", border:"#5a2da0" },
 }
 
-// ── Small sub-components ──────────────────────────────────────────────────────
+// ── FeedbackAnalysis — self-contained sub-component ──────────────────────────
+
+function FeedbackAnalysis() {
+  const [feedbacks, setFeedbacks]   = useState([])
+  const [loading, setLoading]       = useState(true)
+  const [question, setQuestion]     = useState("")
+  const [chatMsgs, setChatMsgs]     = useState([])
+  const [chatBusy, setChatBusy]     = useState(false)
+  const [summary, setSummary]       = useState(null)
+  const chatEndRef = useRef()
+
+  useEffect(() => {
+    api.get("/admin/app-feedback?limit=100")
+      .then(r => setFeedbacks(r.data || []))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }) }, [chatMsgs])
+
+  const runAnalysis = async (q) => {
+    const msg = (q || question).trim()
+    if (!msg || chatBusy) return
+    const next = [...chatMsgs, { role: "user", content: msg }]
+    setChatMsgs(next); setQuestion(""); setChatBusy(true)
+    try {
+      const res = await api.post("/admin/app-feedback/analyse", {
+        question: msg, chat_history: chatMsgs.slice(-4),
+      })
+      setSummary(res.data)
+      setChatMsgs([...next, { role: "assistant", content: res.data.answer }])
+    } catch {
+      setChatMsgs([...next, { role: "assistant", content: "Analysis failed. Please try again." }])
+    } finally { setChatBusy(false) }
+  }
+
+  const avgRating = feedbacks.length
+    ? (feedbacks.reduce((s, f) => s + f.rating, 0) / feedbacks.length).toFixed(1)
+    : "—"
+
+  const SAMPLE_QS = [
+    "What are users complaining about most?",
+    "Summarise all feature requests",
+    "What do users love about the app?",
+    "Which bugs have been reported?",
+  ]
+
+  return (
+    <div>
+      <p className="text-xs font-black uppercase tracking-widest mb-4"
+        style={{ color:"var(--text-faint)" }}>
+        User app feedback ({feedbacks.length} submissions)
+      </p>
+
+      {/* Stats row */}
+      {feedbacks.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <div className="dk-card p-4 text-center">
+            <p className="text-2xl font-black" style={{ color:"#f59e0b" }}>{avgRating}★</p>
+            <p className="text-xs mt-1" style={{ color:"var(--text-faint)" }}>Avg rating</p>
+          </div>
+          <div className="dk-card p-4 text-center">
+            <p className="text-2xl font-black" style={{ color:"var(--text-primary)" }}>{feedbacks.length}</p>
+            <p className="text-xs mt-1" style={{ color:"var(--text-faint)" }}>Total responses</p>
+          </div>
+          <div className="dk-card p-4 text-center">
+            <p className="text-2xl font-black" style={{ color:"#4ade80" }}>
+              {feedbacks.filter(f => f.rating >= 4).length}
+            </p>
+            <p className="text-xs mt-1" style={{ color:"var(--text-faint)" }}>4–5 star</p>
+          </div>
+          <div className="dk-card p-4 text-center">
+            <p className="text-2xl font-black" style={{ color:"#f87171" }}>
+              {feedbacks.filter(f => f.rating <= 2).length}
+            </p>
+            <p className="text-xs mt-1" style={{ color:"var(--text-faint)" }}>1–2 star</p>
+          </div>
+        </div>
+      )}
+
+      {/* Recent feedback list */}
+      {!loading && feedbacks.length > 0 && (
+        <div className="dk-card overflow-hidden mb-4">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead style={{ background:"var(--hover-bg)", borderBottom:"1px solid var(--card-border)" }}>
+                <tr>
+                  {["User","Rating","Category","Message","Date"].map(h => (
+                    <th key={h} className="text-left px-4 py-2.5 text-xs font-black uppercase tracking-widest"
+                      style={{ color:"var(--text-faint)" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {feedbacks.slice(0, 20).map((fb, idx) => (
+                  <tr key={fb.id}
+                    style={{ borderBottom: idx < 19 ? "1px solid var(--card-border)" : "none" }}>
+                    <td className="px-4 py-3 text-xs" style={{ color:"var(--text-muted)" }}>
+                      {fb.user_name || fb.user_email || "—"}
+                    </td>
+                    <td className="px-4 py-3 text-sm font-bold" style={{ color:"#f59e0b" }}>
+                      {"★".repeat(fb.rating)}{"☆".repeat(5 - fb.rating)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="text-xs px-2 py-0.5 rounded capitalize"
+                        style={{ background:"var(--input-bg)", color:"var(--text-muted)", border:"1px solid var(--card-border)" }}>
+                        {fb.category}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-xs" style={{ color:"var(--text-primary)", maxWidth:"300px" }}>
+                      <p className="truncate">{fb.message || "—"}</p>
+                    </td>
+                    <td className="px-4 py-3 text-xs" style={{ color:"var(--text-faint)" }}>
+                      {new Date(fb.created_at).toLocaleDateString("en-IN", { day:"2-digit", month:"short" })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {loading && (
+        <div className="dk-card p-8 text-center mb-4">
+          <p className="text-sm animate-pulse" style={{ color:"var(--text-faint)" }}>Loading feedback…</p>
+        </div>
+      )}
+
+      {!loading && feedbacks.length === 0 && (
+        <div className="dk-card p-8 text-center mb-4">
+          <p className="text-sm" style={{ color:"var(--text-faint)" }}>No feedback submitted yet</p>
+        </div>
+      )}
+
+      {/* LLM Analysis chat */}
+      {feedbacks.length > 0 && (
+        <div className="dk-card overflow-hidden">
+          <div className="px-5 py-4 flex items-center gap-3"
+            style={{ background:"linear-gradient(135deg,#1a0d2e,#0d0820)", borderBottom:"1px solid var(--card-border)" }}>
+            <span className="text-2xl">🔮</span>
+            <div>
+              <h3 className="text-sm font-black" style={{ color:"var(--text-primary)" }}>
+                AI feedback analyser
+              </h3>
+              <p className="text-xs" style={{ color:"var(--text-muted)" }}>
+                Ask questions about what users think
+              </p>
+            </div>
+          </div>
+
+          {chatMsgs.length === 0 && (
+            <div className="px-5 py-4 flex flex-wrap gap-2">
+              {SAMPLE_QS.map(q => (
+                <button key={q} onClick={() => runAnalysis(q)}
+                  className="text-xs px-3 py-1.5 rounded-full font-medium transition-colors hover-lift"
+                  style={{ background:"var(--input-bg)", border:"1px solid var(--card-border)", color:"var(--text-muted)" }}>
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {chatMsgs.length > 0 && (
+            <div className="px-5 py-4 max-h-80 overflow-y-auto space-y-4 chat-scroll">
+              {chatMsgs.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role==="user" ? "justify-end" : "justify-start"}`}>
+                  <div className="max-w-2xl px-4 py-3 rounded-2xl text-sm leading-relaxed"
+                    style={msg.role==="user"
+                      ? { background:"var(--orange)", color:"#fff", borderBottomRightRadius:"4px" }
+                      : { background:"var(--hover-bg)", color:"var(--text-primary)", border:"1px solid var(--card-border)", borderBottomLeftRadius:"4px" }}>
+                    {msg.content}
+                  </div>
+                </div>
+              ))}
+              {chatBusy && (
+                <div className="flex justify-start">
+                  <div className="px-4 py-3 rounded-2xl text-sm flex items-center gap-2"
+                    style={{ background:"var(--hover-bg)", color:"var(--text-muted)", border:"1px solid var(--card-border)" }}>
+                    <svg className="animate-spin h-3.5 w-3.5" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    <span className="animate-pulse text-xs">Analysing {feedbacks.length} responses…</span>
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef}/>
+            </div>
+          )}
+
+          <div className="px-5 py-4 flex gap-2" style={{ borderTop:"1px solid var(--card-border)" }}>
+            <input value={question} onChange={e => setQuestion(e.target.value)}
+              onKeyDown={e => e.key==="Enter" && !e.shiftKey && runAnalysis()}
+              placeholder="e.g. What features do users want most?"
+              disabled={chatBusy} className="dk-input flex-1"/>
+            <button onClick={() => runAnalysis()} disabled={chatBusy || !question.trim()}
+              className="btn-orange flex-shrink-0" style={{ padding:"0.5rem 1.2rem", borderRadius:"0.625rem" }}>
+              Analyse →
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function KpiCard({ label, value, sub, color }) {
   return (
@@ -552,6 +757,9 @@ export default function AdminDashboard() {
           </div>
         </div>
       </div>
+
+      {/* ══ App Feedback Analysis ═══════════════════════════════════════════ */}
+      <FeedbackAnalysis />
 
     </div>
   )

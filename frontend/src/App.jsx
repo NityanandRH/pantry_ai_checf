@@ -5,16 +5,17 @@ import Login from "./Login"
 import Inventory from "./Inventory"
 import RecipeBuilder from "./RecipeBuilder"
 import AdminDashboard from "./AdminDashboard"
+import ProfileSidebar from "./ProfileSidebar"
 
-// In production: VITE_API_URL = https://d1hb9gg7lgcnhq.cloudfront.net
-// In local dev:  VITE_API_URL = "" so Vite proxy forwards to localhost:8000
 const API_BASE = import.meta.env.VITE_API_URL || ""
 
 export default function App() {
   const { user, loading, isAdmin, logout, refreshUser } = useAuth()
-  const [activeTab, setActiveTab]     = useState("cook")
-  const [ingredients, setIngredients] = useState([])
-  const [fetchError, setFetchError]   = useState(false)
+  const [activeTab, setActiveTab]       = useState("cook")
+  const [ingredients, setIngredients]   = useState([])
+  const [fetchError, setFetchError]     = useState(false)
+  const [sidebarOpen, setSidebarOpen]   = useState(false)
+  const [loadRecipeId, setLoadRecipeId] = useState(null)
 
   const fetchIngredients = useCallback(async () => {
     if (!user) return
@@ -98,19 +99,21 @@ export default function App() {
                 </button>
               )}
               <div className="flex items-center gap-2">
-                {user.picture ? (
-                  <img src={user.picture} alt={user.name || "User"}
-                    className="w-9 h-9 rounded-full border-2 border-white/30 object-cover"/>
-                ) : (
-                  <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-black text-white"
-                    style={{ background: "var(--orange)" }}>
-                    {(user.name || user.email || "?")[0].toUpperCase()}
+                <button onClick={() => setSidebarOpen(true)} className="flex items-center gap-2 group">
+                  {user.picture ? (
+                    <img src={user.picture} alt={user.name || "User"}
+                      className="w-9 h-9 rounded-full border-2 border-white/30 object-cover group-hover:border-orange-400 transition-colors"/>
+                  ) : (
+                    <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-black text-white group-hover:opacity-80 transition-opacity"
+                      style={{ background: "var(--orange)" }}>
+                      {(user.name || user.email || "?")[0].toUpperCase()}
+                    </div>
+                  )}
+                  <div className="hidden sm:block text-left">
+                    <div className="text-xs font-semibold text-white leading-none">{user.name || user.email}</div>
+                    <div className="text-xs text-orange-300 mt-0.5 capitalize">{user.tier}{user.is_admin ? " · admin" : ""}</div>
                   </div>
-                )}
-                <div className="hidden sm:block">
-                  <div className="text-xs font-semibold text-white leading-none">{user.name || user.email}</div>
-                  <div className="text-xs text-orange-300 mt-0.5 capitalize">{user.tier}{user.is_admin ? " · admin" : ""}</div>
-                </div>
+                </button>
                 <button onClick={logout} className="text-xs text-white/60 hover:text-white ml-1 transition-colors">
                   Sign out
                 </button>
@@ -180,6 +183,8 @@ export default function App() {
             onGoToPantry={() => setActiveTab("pantry")}
             user={user}
             onRecipeGenerated={refreshUser}
+            loadRecipeId={loadRecipeId}
+            onLoadRecipeDone={() => setLoadRecipeId(null)}
           />
         )}
         {activeTab === "admin" && isAdmin && (
@@ -190,9 +195,19 @@ export default function App() {
       <footer className="w-full px-6 sm:px-10 lg:px-16 py-4 mt-8"
         style={{ borderTop: "1px solid var(--card-border)" }}>
         <p className="text-xs" style={{ color: "var(--text-faint)" }}>
-          PantryChef v2.2 · AI agent-powered · GPT-4o
+          PantryChef v2.3 · AI agent-powered · GPT-4o
         </p>
       </footer>
+
+      {/* ── Profile sidebar ── */}
+      <ProfileSidebar
+        user={{ ...user, recipe_limit: user?.recipe_limit ?? 3 }}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        onLoadRecipe={(id) => setLoadRecipeId(id)}
+        onGoToCook={() => setActiveTab("cook")}
+        logout={logout}
+      />
     </div>
   )
 }
