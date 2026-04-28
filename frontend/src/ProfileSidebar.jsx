@@ -60,24 +60,26 @@ export default function ProfileSidebar({ user, isOpen, onClose, onLoadRecipe, on
   const [fbError, setFbError]       = useState("")
 
   // Load recipe history when Recipes tab is opened
-  // Use histLoading as the guard instead of history.length so it reloads if user
-  // generates a new recipe and reopens the sidebar
   const [histLoaded, setHistLoaded] = useState(false)
+  const [histError, setHistError]   = useState(false)
+
   useEffect(() => {
     if (activeTab === "recipes" && isOpen && !histLoaded) {
-      setHistLoading(true)
+      setHistLoading(true); setHistError(false)
       api.get("/recipe/history?limit=30")
         .then(r => { setHistory(r.data || []); setHistLoaded(true) })
-        .catch(() => setHistLoaded(true))
+        .catch(() => { setHistError(true); setHistLoaded(true) })
         .finally(() => setHistLoading(false))
     }
   }, [activeTab, isOpen])
 
-  // Reset feedback form when sidebar opens
+  // Reset on every sidebar open so fresh recipes appear
   useEffect(() => {
     if (isOpen) {
       setFbDone(false); setFbError(""); setFbRating(0)
       setFbCategory("general"); setFbMessage("")
+      // Reset history so it reloads fresh each time sidebar opens
+      setHistLoaded(false); setHistory([])
     }
   }, [isOpen])
 
@@ -259,11 +261,17 @@ export default function ProfileSidebar({ user, isOpen, onClose, onLoadRecipe, on
                 <div className="text-center py-10">
                   <div className="text-4xl mb-3">🍽</div>
                   <p className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                    No recipes yet
+                    {histError ? "Could not load recipes" : "No recipes yet"}
                   </p>
                   <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-                    Generate your first recipe in the Cook tab
+                    {histError ? "Check your connection and try again" : "Generate your first recipe in the Cook tab"}
                   </p>
+                  {histError && (
+                    <button onClick={() => setHistLoaded(false)}
+                      className="btn-ghost mt-3 text-xs" style={{ padding: "0.4rem 1rem" }}>
+                      Retry
+                    </button>
+                  )}
                 </div>
               ) : (
                 <>

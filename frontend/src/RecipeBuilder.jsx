@@ -105,7 +105,7 @@ function IngStatusList({ ingStatus }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, onRecipeGenerated, loadRecipeId, onLoadRecipeDone }) {
+export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
   const [searchTerm, setSearchTerm]   = useState("")
   const [searchBusy, setSearchBusy]   = useState(false)
   const [filters, setFilters]         = useState(EMPTY_FILTERS)
@@ -113,11 +113,13 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
   const [genBusy, setGenBusy]         = useState(false)
   const [agentMsg, setAgentMsg]       = useState("")
 
-  const [recipe, setRecipe]           = useState(null)
-  const [recipeId, setRecipeId]       = useState(null)
-  const [recipeMode, setRecipeMode]   = useState(null)
-  const [ingStatus, setIngStatus]     = useState(null)
-  const [shoppingList, setShoppingList] = useState([])
+  const [recipe, setRecipe]               = useState(null)
+  const [recipeId, setRecipeId]           = useState(null)
+  const [recipeMode, setRecipeMode]       = useState(null)
+  const [ingStatus, setIngStatus]         = useState(null)
+  const [shoppingList, setShoppingList]   = useState([])
+  const [variationsHighlighted, setVariationsHighlighted] = useState(false)
+  const variationsRef = useRef()
   const [shopCopied, setShopCopied]   = useState(false)
   const [validResult, setValidResult] = useState(null)
 
@@ -148,18 +150,6 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
 
   useEffect(()=>{ chatEndRef.current?.scrollIntoView({behavior:"smooth"}) },[chatMsgs])
   useEffect(()=>{ setChatMsgs([]); setFbDone(false); setShowFeedback(false); setFbRating(""); setFbNotes(""); setValidResult(null) },[recipeId])
-
-  // ── Load recipe from history (triggered by ProfileSidebar) ───────────────
-  useEffect(() => {
-    if (!loadRecipeId) return
-    api.get(`/recipe/${loadRecipeId}`)
-      .then(res => {
-        applyRecipe(res.data, loadRecipeId, res.data.mode)
-        flash("Recipe loaded from history!")
-      })
-      .catch(() => flash("Could not load recipe", "err"))
-      .finally(() => onLoadRecipeDone?.())
-  }, [loadRecipeId])
 
   const applyRecipe = (data, id, mode, ingStatusObj=null, shopList=[]) => {
     setRecipe(data.recipe_json||data)
@@ -261,14 +251,17 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
       .then(()=>flash("Copied for WhatsApp!")).catch(()=>flash("Copy not supported","err"))
   }
 
-  const showVariations = async () => {
-    if (!recipe?.name) return
-    setSearchBusy(true); setError(null)
-    try {
-      const res = await api.post(`/recipe/search`,{dish_name:recipe.name})
-      applyRecipe(res.data, res.data.id, "direct", res.data.ingredient_status, res.data.shopping_list||[])
-    } catch { setError("Could not load variations") }
-    finally { setSearchBusy(false) }
+  const showVariations = () => {
+    if (!recipe?.variations?.length) {
+      // No variations in current recipe — scroll to recipe name and flash it
+      recipeRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+      flash("No variations available for this recipe. Try searching the dish directly.", "err")
+      return
+    }
+    // Highlight and scroll to variations section
+    setVariationsHighlighted(true)
+    setTimeout(() => setVariationsHighlighted(false), 2500)
+    setTimeout(() => variationsRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 100)
   }
 
   const sendChat = async () => {
@@ -689,7 +682,13 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                     </div>
                   )}
                   {recipeMode==="direct"&&recipe.variations?.length>0 && (
-                    <div className="mt-3 rounded-xl px-4 py-3" style={{background:"#1a0d2e",border:"1px solid #5a2da0"}}>
+                    <div ref={variationsRef}
+                      className="mt-3 rounded-xl px-4 py-3 transition-all duration-700"
+                      style={{
+                        background: variationsHighlighted ? "#2e1a3e" : "#1a0d2e",
+                        border: `1px solid ${variationsHighlighted ? "#9b59d0" : "#5a2da0"}`,
+                        boxShadow: variationsHighlighted ? "0 0 24px rgba(155,89,208,0.45)" : "none",
+                      }}>
                       <p className="text-xs font-black mb-1.5" style={{color:"#c4b5fd"}}>🔀 Variations</p>
                       {recipe.variations.map((v,i)=><p key={i} className="text-xs leading-relaxed" style={{color:"#ddd6fe"}}>• {v}</p>)}
                     </div>
