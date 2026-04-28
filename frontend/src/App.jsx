@@ -6,6 +6,10 @@ import Inventory from "./Inventory"
 import RecipeBuilder from "./RecipeBuilder"
 import AdminDashboard from "./AdminDashboard"
 
+// In production: VITE_API_URL = https://d1hb9gg7lgcnhq.cloudfront.net
+// In local dev:  VITE_API_URL = "" so Vite proxy forwards to localhost:8000
+const API_BASE = import.meta.env.VITE_API_URL || ""
+
 export default function App() {
   const { user, loading, isAdmin, logout, refreshUser } = useAuth()
   const [activeTab, setActiveTab]     = useState("cook")
@@ -25,7 +29,6 @@ export default function App() {
 
   useEffect(() => { fetchIngredients() }, [fetchIngredients])
 
-  // ── Loading splash ────────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center"
@@ -40,16 +43,11 @@ export default function App() {
     )
   }
 
-  // ── Not logged in → show Login page ──────────────────────────────────────
-  if (!user) {
-    return <Login />
-  }
+  if (!user) return <Login />
 
-  // ── Recipe usage stats (from /me endpoint) ────────────────────────────────
-  const recipeLimit     = user.recipe_limit     ?? 3
-  const recipesUsed     = user.recipe_count     ?? 0
-  const recipesLeft     = user.recipes_remaining ?? 3
-  const limitReached    = user.limit_reached    ?? false
+  const recipeLimit  = user.recipe_limit     ?? 3
+  const recipesUsed  = user.recipe_count     ?? 0
+  const limitReached = user.limit_reached    ?? false
 
   const expiringCount = ingredients.filter(i => {
     if (!i.expiry_date) return false
@@ -57,8 +55,8 @@ export default function App() {
   }).length
 
   const TABS = [
-    { id: "cook",   label: "🍽 Cook"       },
-    { id: "pantry", label: "🥕 My Pantry"  },
+    { id: "cook",   label: "🍽 Cook"      },
+    { id: "pantry", label: "🥕 My Pantry" },
     ...(isAdmin ? [{ id: "admin", label: "⚙ Admin" }] : []),
   ]
 
@@ -68,9 +66,7 @@ export default function App() {
       {/* ── Hero header ── */}
       <div className="bg-hero w-full">
         <div className="w-full px-6 sm:px-10 lg:px-16 py-8 sm:py-10">
-
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-            {/* Brand */}
             <div className="flex items-center gap-3">
               <span className="text-4xl drop-shadow-lg">🍳</span>
               <div>
@@ -83,36 +79,24 @@ export default function App() {
               </div>
             </div>
 
-            {/* Stats + user */}
             <div className="flex items-center gap-3 flex-wrap">
-              {/* Recipe usage meter */}
               {user.tier === "free" && (
                 <div className="text-center rounded-xl px-4 py-2"
                   style={{ background: limitReached ? "rgba(220,50,50,0.3)" : "rgba(255,255,255,0.1)", border: limitReached ? "1px solid rgba(220,50,50,0.5)" : "none" }}>
-                  <div className="text-sm font-black text-white leading-none">
-                    {recipesUsed}/{recipeLimit}
-                  </div>
-                  <div className="text-xs text-orange-200 mt-0.5">
-                    {limitReached ? "limit reached" : "free recipes"}
-                  </div>
+                  <div className="text-sm font-black text-white leading-none">{recipesUsed}/{recipeLimit}</div>
+                  <div className="text-xs text-orange-200 mt-0.5">{limitReached ? "limit reached" : "free recipes"}</div>
                 </div>
               )}
-
-              {/* Ingredient count */}
               <div className="text-center bg-white/10 rounded-xl px-4 py-2">
                 <div className="text-2xl font-black text-white leading-none">{ingredients.length}</div>
                 <div className="text-xs text-orange-200 mt-0.5">ingredients</div>
               </div>
-
-              {/* Expiry alert */}
               {expiringCount > 0 && (
                 <button onClick={() => setActiveTab("pantry")}
                   className="bg-amber-500/90 hover:bg-amber-400 text-amber-950 text-xs font-bold px-4 py-2 rounded-xl transition-colors">
                   ⏰ {expiringCount} expiring
                 </button>
               )}
-
-              {/* User avatar + logout */}
               <div className="flex items-center gap-2">
                 {user.picture ? (
                   <img src={user.picture} alt={user.name || "User"}
@@ -124,22 +108,16 @@ export default function App() {
                   </div>
                 )}
                 <div className="hidden sm:block">
-                  <div className="text-xs font-semibold text-white leading-none">
-                    {user.name || user.email}
-                  </div>
-                  <div className="text-xs text-orange-300 mt-0.5 capitalize">
-                    {user.tier}{user.is_admin ? " · admin" : ""}
-                  </div>
+                  <div className="text-xs font-semibold text-white leading-none">{user.name || user.email}</div>
+                  <div className="text-xs text-orange-300 mt-0.5 capitalize">{user.tier}{user.is_admin ? " · admin" : ""}</div>
                 </div>
-                <button onClick={logout}
-                  className="text-xs text-white/60 hover:text-white ml-1 transition-colors">
+                <button onClick={logout} className="text-xs text-white/60 hover:text-white ml-1 transition-colors">
                   Sign out
                 </button>
               </div>
             </div>
           </div>
 
-          {/* Tab bar */}
           <div className="flex gap-1">
             {TABS.map(tab => (
               <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -156,19 +134,17 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── Backend error banner ── */}
+      {/* ── Error banners ── */}
       {fetchError && (
         <div className="w-full px-6 sm:px-10 lg:px-16 pt-4">
           <div className="rounded-xl px-4 py-3 text-sm flex items-center justify-between"
             style={{ background: "#2e0d0d", border: "1px solid #7c2020", color: "#fca5a5" }}>
-            <span>Cannot reach backend. Is it running on port 8000?</span>
-            <button onClick={fetchIngredients}
-              className="text-xs underline ml-4" style={{ color: "#fca5a5" }}>Retry</button>
+            <span>Cannot reach backend.</span>
+            <button onClick={fetchIngredients} className="text-xs underline ml-4" style={{ color: "#fca5a5" }}>Retry</button>
           </div>
         </div>
       )}
 
-      {/* ── Upgrade banner when limit reached ── */}
       {limitReached && activeTab === "cook" && (
         <div className="w-full px-6 sm:px-10 lg:px-16 pt-4">
           <div className="rounded-xl px-5 py-4 flex items-center justify-between"
@@ -178,11 +154,10 @@ export default function App() {
                 🎉 You've used all {recipeLimit} free recipes!
               </p>
               <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-                Upgrade to Pro (₹99/mo) for unlimited recipe generation, meal planner, and more.
+                Upgrade to Pro (₹99/mo) for unlimited recipe generation.
               </p>
             </div>
-            <button className="btn-orange flex-shrink-0 ml-4"
-              style={{ padding: "0.5rem 1.2rem" }}>
+            <button className="btn-orange flex-shrink-0 ml-4" style={{ padding: "0.5rem 1.2rem" }}>
               Upgrade
             </button>
           </div>
@@ -195,13 +170,13 @@ export default function App() {
           <Inventory
             ingredients={ingredients}
             refreshInventory={fetchIngredients}
-            API=""
+            API={API_BASE}
           />
         )}
         {activeTab === "cook" && (
           <RecipeBuilder
             ingredients={ingredients}
-            API=""
+            API={API_BASE}
             onGoToPantry={() => setActiveTab("pantry")}
             user={user}
             onRecipeGenerated={refreshUser}
@@ -215,7 +190,7 @@ export default function App() {
       <footer className="w-full px-6 sm:px-10 lg:px-16 py-4 mt-8"
         style={{ borderTop: "1px solid var(--card-border)" }}>
         <p className="text-xs" style={{ color: "var(--text-faint)" }}>
-          PantryChef v2.1 · Phase 1 · AI agent-powered · GPT-4o
+          PantryChef v2.2 · AI agent-powered · GPT-4o
         </p>
       </footer>
     </div>
