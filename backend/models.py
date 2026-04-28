@@ -201,3 +201,30 @@ class UserRecipe(Base):
             "cuisine":      self.cuisine,
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
         }
+
+
+# ---------------------------------------------------------------------------
+# NEW — Table: app_feedback
+# User feedback about the app itself (not about a specific recipe).
+# Admin can run LLM analysis on all feedback at once.
+# ---------------------------------------------------------------------------
+ 
+class AppFeedback(Base):
+    __tablename__ = "app_feedback"
+ 
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    user_id    = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    rating     = Column(Integer, nullable=False)    # 1–5 stars
+    category   = Column(String(50), nullable=False) # general|ui|feature|bug|other
+    message    = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+ 
+    def to_dict(self):
+        return {
+            "id":         self.id,
+            "user_id":    self.user_id,
+            "rating":     self.rating,
+            "category":   self.category,
+            "message":    self.message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }

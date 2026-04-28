@@ -21,9 +21,8 @@ from openai import OpenAI
 from PIL import Image
 
 from database import get_db, init_db
-from models import Ingredient, Recipe, Favourite, Feedback, UserRecipe, User
+from models import Ingredient, Recipe, Favourite, Feedback, UserRecipe, User, AppFeedback
 from auth import get_current_user, require_admin
-from admin import router as admin_router
 from prompts import (
     RECIPE_AGENT_TOOLS, AGENT_SYSTEM,
     MODE_A_FALLBACK_SYSTEM, MODE_B_SYSTEM,
@@ -44,7 +43,7 @@ init_db()
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
-app = FastAPI(title="PantryChef API", version="2.2.0")
+app = FastAPI(title="PantryChef API", version="2.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -52,9 +51,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Mount admin router — all routes under /admin require is_admin=True
-app.include_router(admin_router)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -111,6 +107,11 @@ class UserRecipeCreate(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     chat_history: Optional[List[dict]] = []
+
+class AppFeedbackCreate(BaseModel):
+    rating: int         # 1–5
+    category: str       # general | ui | feature | bug | other
+    message: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +646,29 @@ def list_favourites(
             .order_by(Recipe.generated_at.desc()).all()]
 
 
+@app.get("/recipe/history")
+def get_recipe_history(
+    limit: int = 30,
+    mode: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return the user's recent recipe history as lightweight summaries.
+    Used by ProfileSidebar to show past recipes with load-back option.
+
+    Query params:
+      limit — max number of recipes (default 30, max 50)
+      mode  — filter by 'pantry' or 'direct' (optional)
+    """
+    limit = min(limit, 50)
+    q = db.query(Recipe).filter(Recipe.user_id == current_user.id)
+    if mode in ("pantry", "direct"):
+        q = q.filter(Recipe.mode == mode)
+    rows = q.order_by(Recipe.generated_at.desc()).limit(limit).all()
+    return [r.to_summary() for r in rows]
+
+
 @app.get("/recipe/{recipe_id}")
 def get_recipe(
     recipe_id: int,
@@ -794,4 +818,44 @@ def list_user_recipes(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "PantryChef API", "version": "2.1.0"}
+    return {"status": "ok", "service": "PantryChef API", "version": "2.3.0"}
+
+
+# ---------------------------------------------------------------------------
+# APP FEEDBACK
+# ---------------------------------------------------------------------------
+
+VALID_FB_CATEGORIES = {"general", "ui", "feature", "bug", "other"}
+
+@app.post("/app-feedback", status_code=201)
+def submit_app_feedback(
+    payload: AppFeedbackCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Store user feedback about the app itself."""
+    if not 1 <= payload.rating <= 5:
+        raise HTTPException(400, "Rating must be between 1 and 5")
+    cat = payload.category.lower().strip()
+    if cat not in VALID_FB_CATEGORIES:
+        cat = "other"
+    fb = AppFeedback(
+        user_id=current_user.id,
+        rating=payload.rating,
+        category=cat,
+        message=payload.message,
+    )
+    db.add(fb); db.commit(); db.refresh(fb)
+    return fb.to_dict()
+
+
+@app.get("/app-feedback/mine")
+def get_my_feedback(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the current user's own feedback submissions."""
+    rows = db.query(AppFeedback).filter(
+        AppFeedback.user_id == current_user.id
+    ).order_by(AppFeedback.created_at.desc()).all()
+    return [r.to_dict() for r in rows]

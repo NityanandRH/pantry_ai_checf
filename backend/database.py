@@ -10,6 +10,7 @@ models.py now only contains table definitions.
 """
 
 import os
+import warnings
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from dotenv import load_dotenv
@@ -21,7 +22,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     # Fallback to SQLite for developers who haven't set up PostgreSQL yet
     # This allows the app to start without docker-compose if AUTH_DISABLED=true
-    import warnings
+    
     warnings.warn(
         "DATABASE_URL not set — falling back to SQLite (pantry.db). "
         "For multi-user / AWS deployment, run docker-compose up -d first.",

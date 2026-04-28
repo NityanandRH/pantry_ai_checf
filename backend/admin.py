@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from openai import OpenAI
 
 from database import get_db
-from models import User, Recipe, Ingredient, Feedback, UserRecipe
+from models import User, Recipe, Ingredient, Feedback, UserRecipe, AppFeedback
 from auth import require_admin
 
 logger = logging.getLogger(__name__)
@@ -39,13 +39,18 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # ---------------------------------------------------------------------------
 
 class UserUpdate(BaseModel):
-    tier: Optional[str]    = None   # free | pro | credits
+    tier: Optional[str]    = None
     is_admin: Optional[bool] = None
     recipe_count: Optional[int] = None
 
 
 class AdminAskRequest(BaseModel):
     question: str
+    chat_history: Optional[list] = []
+
+
+class FeedbackAnalyseRequest(BaseModel):
+    question: Optional[str] = "Summarise all user feedback. What are the most common themes, top requests, and main pain points?"
     chat_history: Optional[list] = []
 
 
@@ -373,56 +378,134 @@ def admin_ask(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """
-    LLM Q&A endpoint. Admin types a natural language question,
-    backend fetches fresh aggregated data, passes it to GPT-4o,
-    and returns a grounded answer.
-
-    Example questions:
-      "Which cuisine is most popular?"
-      "How many users signed up this week?"
-      "Which users are at risk of churning?"
-      "What are the top 5 most searched dishes?"
-    """
-    # Build fresh data context every time so answers are always up to date
     ctx = _build_data_context(db)
     ctx_json = json.dumps(ctx, indent=2, ensure_ascii=False)
-
-    # Trim context if it's too long (keep most important sections)
     if len(ctx_json) > 8000:
-        # Remove daily arrays which are verbose but less useful for Q&A
         ctx.pop("daily_recipe_counts", None)
         ctx.pop("daily_signup_counts", None)
         ctx_json = json.dumps(ctx, indent=2, ensure_ascii=False)
 
     system_prompt = ADMIN_QA_SYSTEM.format(context=ctx_json)
-
     messages = [{"role": "system", "content": system_prompt}]
-
-    # Include recent chat history for multi-turn conversations
     for turn in (payload.chat_history or [])[-8:]:
         if turn.get("role") in ("user", "assistant") and turn.get("content"):
             messages.append({"role": turn["role"], "content": turn["content"]})
-
     messages.append({"role": "user", "content": payload.question})
 
     try:
         resp = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            temperature=0.3,  # lower temperature = more factual, less creative
-            max_tokens=600,
+            model="gpt-4o", messages=messages,
+            temperature=0.3, max_tokens=600,
         )
         answer = resp.choices[0].message.content.strip()
     except Exception as e:
         raise HTTPException(502, f"AI service error: {e}")
 
     return {
-        "answer":   answer,
+        "answer": answer,
         "question": payload.question,
         "context_snapshot": {
             "total_users":   ctx["users"]["total"],
             "total_recipes": ctx["recipes"]["total"],
             "generated_at":  ctx["generated_at"],
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/app-feedback — list all app feedback
+# ---------------------------------------------------------------------------
+
+@router.get("/app-feedback")
+def get_all_app_feedback(
+    limit: int = 100,
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """List all user app feedback for admin review."""
+    q = db.query(AppFeedback)
+    if category:
+        q = q.filter(AppFeedback.category == category)
+    rows = q.order_by(AppFeedback.created_at.desc()).limit(min(limit, 200)).all()
+
+    # Enrich with user email
+    result = []
+    for fb in rows:
+        d = fb.to_dict()
+        user = db.query(User.email, User.name).filter(User.id == fb.user_id).first()
+        d["user_email"] = user.email if user else "unknown"
+        d["user_name"]  = user.name  if user else "unknown"
+        result.append(d)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# POST /admin/app-feedback/analyse — LLM analysis of all feedback
+# ---------------------------------------------------------------------------
+
+@router.post("/app-feedback/analyse")
+def analyse_app_feedback(
+    payload: FeedbackAnalyseRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """
+    LLM analysis over all app feedback.
+    Fetches all feedback, passes to GPT-4o with the admin's question.
+    """
+    rows = db.query(AppFeedback).order_by(AppFeedback.created_at.desc()).limit(200).all()
+
+    if not rows:
+        return {"answer": "No feedback submitted yet.", "count": 0}
+
+    # Build compact feedback list for context
+    feedback_lines = []
+    for fb in rows:
+        line = f"[{fb.category.upper()} | {fb.rating}★] {fb.message or '(no message)'}"
+        feedback_lines.append(line)
+
+    feedback_text = "\n".join(feedback_lines)
+
+    # Rating distribution
+    from collections import Counter
+    rating_dist = Counter(fb.rating for fb in rows)
+    cat_dist    = Counter(fb.category for fb in rows)
+    avg_rating  = sum(fb.rating for fb in rows) / len(rows)
+
+    system = f"""You are PantryChef's product analyst. Analyse the user feedback below and answer the admin's question.
+
+FEEDBACK SUMMARY:
+Total responses: {len(rows)}
+Average rating: {avg_rating:.1f}/5
+Rating distribution: {dict(sorted(rating_dist.items()))}
+Category breakdown: {dict(cat_dist)}
+
+ALL FEEDBACK:
+{feedback_text[:6000]}
+
+Be specific, cite counts where possible, and give actionable insights."""
+
+    messages = [{"role": "system", "content": system}]
+    for turn in (payload.chat_history or [])[-6:]:
+        if turn.get("role") in ("user", "assistant") and turn.get("content"):
+            messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": payload.question})
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o", messages=messages,
+            temperature=0.3, max_tokens=800,
+        )
+        answer = resp.choices[0].message.content.strip()
+    except Exception as e:
+        raise HTTPException(502, f"AI service error: {e}")
+
+    return {
+        "answer":       answer,
+        "count":        len(rows),
+        "avg_rating":   round(avg_rating, 1),
+        "rating_dist":  dict(rating_dist),
+        "category_dist": dict(cat_dist),
     }
