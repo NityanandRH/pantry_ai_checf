@@ -670,6 +670,20 @@ def get_recipe_history(
     rows = q.order_by(Recipe.generated_at.desc()).limit(limit).all()
     return [r.to_summary() for r in rows]
 
+@app.get("/recipe/{recipe_id}")
+def get_recipe_by_id(
+    recipe_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    recipe = db.query(Recipe).filter(
+        Recipe.id == recipe_id,
+        Recipe.user_id == current_user.id
+    ).first()
+    if not recipe:
+        raise HTTPException(404, "Recipe not found")
+    return recipe.to_dict()
+
 
 @app.get("/recipe/{recipe_id}")
 def get_recipe(

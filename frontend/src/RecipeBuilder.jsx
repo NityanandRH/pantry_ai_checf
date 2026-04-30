@@ -105,7 +105,7 @@ function IngStatusList({ ingStatus }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
+export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, onRecipeGenerated, loadRecipeId, onLoadRecipeDone }) {
   const [searchTerm, setSearchTerm]   = useState("")
   const [searchBusy, setSearchBusy]   = useState(false)
   const [filters, setFilters]         = useState(EMPTY_FILTERS)
@@ -150,6 +150,20 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry }) {
 
   useEffect(()=>{ chatEndRef.current?.scrollIntoView({behavior:"smooth"}) },[chatMsgs])
   useEffect(()=>{ setChatMsgs([]); setFbDone(false); setShowFeedback(false); setFbRating(""); setFbNotes(""); setValidResult(null) },[recipeId])
+  // Load recipe from history when triggered via sidebar
+  useEffect(() => {
+       if (!loadRecipeId) return
+        api.get(`/recipe/${loadRecipeId}`)
+            .then(res => {
+                const data = res.data
+                const recipeData = typeof data.recipe_json === "string"
+                    ? JSON.parse(data.recipe_json)
+                    : data.recipe_json
+                applyRecipe(recipeData, data.id, data.mode || "pantry")
+            })
+            .catch(() => flash("Could not load recipe", "err"))
+            .finally(() => onLoadRecipeDone?.())
+    }, [loadRecipeId])
 
   const applyRecipe = (data, id, mode, ingStatusObj=null, shopList=[]) => {
     setRecipe(data.recipe_json||data)

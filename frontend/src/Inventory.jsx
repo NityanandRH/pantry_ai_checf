@@ -87,19 +87,41 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
 
   // ── Image scan ────────────────────────────────────────────────────────────
 
-  const handleScan = async (e) => {
-    const file = e.target.files[0]; if (!file) return
-    setScanning(true); setScanned([])
-    const fd = new FormData(); fd.append("file", file)
-    try {
-      const res = await api.post(`/inventory/scan-image`, fd)
-      const items = res.data.extracted_ingredients||[]
-      if (!items.length) { flash("No ingredients detected","err"); return }
-      setScanned(items)
-      setSelected(Object.fromEntries(items.map((_,i)=>[i,true])))
-    } catch(e) { flash("Scan failed: "+(e.response?.data?.detail||e.message),"err") }
-    finally { setScanning(false); if(imgRef.current) imgRef.current.value="" }
-  }
+const handleScan = async (e) => {
+  const file = e.target.files[0]; if (!file) return
+  setScanning(true); setScanned([])
+
+  try {
+    // ── Compress image client-side before upload ──
+    const compressed = await new Promise((resolve, reject) => {
+      const img = new Image()
+      const url = URL.createObjectURL(file)
+      img.onload = () => {
+        const MAX = 1024
+        const scale = Math.min(MAX / img.width, MAX / img.height, 1)
+        const canvas = document.createElement("canvas")
+        canvas.width  = Math.round(img.width  * scale)
+        canvas.height = Math.round(img.height * scale)
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height)
+        URL.revokeObjectURL(url)
+        canvas.toBlob(blob => blob ? resolve(blob) : reject("Compression failed"),
+          "image/jpeg", 0.85)
+      }
+      img.onerror = reject
+      img.src = url
+    })
+
+    const fd = new FormData()
+    fd.append("file", compressed, "scan.jpg")
+
+    const res = await api.post(`/inventory/scan-image`, fd)
+    const items = res.data.extracted_ingredients || []
+    if (!items.length) { flash("No ingredients detected", "err"); return }
+    setScanned(items)
+    setSelected(Object.fromEntries(items.map((_, i) => [i, true])))
+  } catch(e) { flash("Scan failed: " + (e.response?.data?.detail || e.message), "err") }
+  finally { setScanning(false); if (imgRef.current) imgRef.current.value = "" }
+}
 
   const addScanned = async () => {
     const toAdd = scanned.filter((_,i)=>selected[i])

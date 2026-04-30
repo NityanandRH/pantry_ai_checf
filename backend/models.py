@@ -134,6 +134,24 @@ class Recipe(Base):
             "generated_at":       self.generated_at.isoformat() if self.generated_at else None,
         }
 
+    def to_summary(self):
+        recipe_data = {}
+        if self.recipe_json:
+            try:
+                recipe_data = json.loads(self.recipe_json) if isinstance(self.recipe_json, str) else self.recipe_json
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return {
+            "id": self.id,
+            "name": self.name,
+            "mode": self.mode,
+            "cuisine": recipe_data.get("cuisine", ""),
+            "cook_time_minutes": recipe_data.get("cook_time_minutes", None),
+            "difficulty": recipe_data.get("difficulty", ""),
+            "is_favourite": self.is_favourite,
+            "generated_at": self.generated_at.isoformat() if self.generated_at else None,
+        }
+
 
 # ---------------------------------------------------------------------------
 # Table: favourites  (scoped per user via recipe FK)

@@ -76,9 +76,9 @@ export default function ProfileSidebar({ user, isOpen, onClose, onLoadRecipe, on
   // Reset on every sidebar open so fresh recipes appear
   useEffect(() => {
     if (isOpen) {
+      setActiveTab("profile")           // ← add this line
       setFbDone(false); setFbError(""); setFbRating(0)
       setFbCategory("general"); setFbMessage("")
-      // Reset history so it reloads fresh each time sidebar opens
       setHistLoaded(false); setHistory([])
     }
   }, [isOpen])
