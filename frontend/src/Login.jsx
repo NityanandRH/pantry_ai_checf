@@ -44,7 +44,7 @@ export default function Login() {
 
           {/* Header */}
           <div className="px-8 pt-10 pb-6 text-center">
-            <div className="text-5xl mb-4">🍳</div>
+            <div className="text-5xl mb-4">🥘</div>
             <h1 className="text-3xl font-black tracking-tight" style={{ color: "var(--text-primary)" }}>
               PantryChef
             </h1>

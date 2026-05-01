@@ -35,7 +35,7 @@ export default function App() {
       <div className="min-h-screen flex items-center justify-center"
         style={{ background: "var(--page-bg)" }}>
         <div className="text-center">
-          <div className="text-5xl mb-4 animate-bounce">🍳</div>
+          <div className="text-5xl mb-4 animate-bounce">🥘</div>
           <p className="text-sm font-semibold" style={{ color: "var(--text-muted)" }}>
             Loading PantryChef…
           </p>

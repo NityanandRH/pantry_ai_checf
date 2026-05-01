@@ -61,9 +61,21 @@ function IngredientAutocomplete({ value, onChange, onSelect }) {
 
   // Close on outside click
   useEffect(() => {
-    const handler = e => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false) }
-    document.addEventListener("mousedown", handler)
-    return () => document.removeEventListener("mousedown", handler)
+    let touchStartY = 0
+    const onTouchStart = e => { touchStartY = e.touches[0]?.clientY || 0 }
+    const onTouchEnd = e => {
+      const moved = Math.abs((e.changedTouches[0]?.clientY || 0) - touchStartY) > 10
+      if (!moved && wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false)
+    }
+    const onMouseDown = e => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false) }
+    document.addEventListener("mousedown", onMouseDown)
+    document.addEventListener("touchstart", onTouchStart, { passive:true })
+    document.addEventListener("touchend", onTouchEnd, { passive:true })
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown)
+      document.removeEventListener("touchstart", onTouchStart)
+      document.removeEventListener("touchend", onTouchEnd)
+    }
   }, [])
 
   const handleKey = e => {
@@ -278,9 +290,7 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
   const handleScan = async (e) => {
     const file = e.target.files[0]; if (!file) return
     setScanning(true); setScanned([])
-
     try {
-      // Compress image client-side before upload
       const compressed = await new Promise((resolve, reject) => {
         const img = new Image()
         const url = URL.createObjectURL(file)
@@ -299,13 +309,14 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
         img.src = url
       })
 
+      // Convert to base64 JSON — avoids WAF multipart blocking
       const base64 = await new Promise((resolve) => {
-          const reader = new FileReader()
-          reader.onload = () => resolve(reader.result.split(",")[1])
-          reader.readAsDataURL(compressed)
-       })
-      const res = await api.post(`/inventory/scan-image`, { image_b64: base64 })
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result.split(",")[1])
+        reader.readAsDataURL(compressed)
+      })
 
+      const res = await api.post(`/inventory/scan-image`, { image_b64: base64 })
       const items = res.data.extracted_ingredients||[]
       if (!items.length) { flash("No ingredients detected","err"); return }
       setScanned(items)
@@ -468,6 +479,7 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
                     type="date"
                     value={customDateVal}
                     onChange={e => setCustomDateVal(e.target.value)}
+                    min={new Date().toISOString().split("T")[0]}
                     className="dk-input"
                     style={{flex:1, colorScheme:"dark"}}
                   />
@@ -550,16 +562,32 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
 
       {/* ── Ingredient table(s) ── */}
       {visible.length === 0 ? (
-        <div className="dk-card text-center py-20">
+        <div className="dk-card text-center py-16">
           <div className="text-6xl mb-4">🥗</div>
           <p className="font-bold text-lg" style={{color:"var(--text-primary)"}}>
             {ingredients.length===0 ? "Your pantry is empty" : "Nothing in this category"}
           </p>
-          <p className="text-sm mt-1" style={{color:"var(--text-muted)"}}>
+          <p className="text-sm mt-1 mb-6" style={{color:"var(--text-muted)"}}>
             {ingredients.length===0
-              ? "Add ingredients above or scan a fridge photo to get started"
+              ? "Add ingredients manually or scan your fridge to get started instantly"
               : "Switch category or add ingredients"}
           </p>
+          {ingredients.length===0 && (
+            <div className="flex gap-3 justify-center flex-wrap">
+              <button onClick={()=>setShowAdd(true)} className="btn-orange">
+                + Add Ingredient
+              </button>
+              <button onClick={()=>imgRef.current.click()}
+                style={{
+                  padding:"0.5rem 1.25rem", borderRadius:"0.75rem", fontWeight:700,
+                  fontSize:"0.85rem", cursor:"pointer",
+                  background:"rgba(249,115,22,0.1)", border:"1.5px solid var(--orange)",
+                  color:"var(--orange)", display:"flex", alignItems:"center", gap:"0.4rem",
+                }}>
+                📷 Scan Fridge
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         Object.entries(grouped).map(([category, items]) => (

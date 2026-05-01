@@ -492,8 +492,7 @@ def generate_recipe(
             },
         )
 
-    inventory = [i.to_dict() for i in db.query(Ingredient).filter(
-        Ingredient.user_id == current_user.id).all()]
+    inventory = [i.to_dict() for i in db.query(Ingredient).filter(Ingredient.user_id == current_user.id).all()]
     if not inventory:
         raise HTTPException(400, "Your pantry is empty. Add some ingredients first.")
 
@@ -565,10 +564,11 @@ def generate_recipe(
     result = row.to_dict()
     result["from_cache"] = False
     result["usage"] = {
-        "used":      current_user.recipe_count,
-        "limit":     limit,
-        "remaining": max(0, limit - current_user.recipe_count),
-    }
+          "used":      current_user.recipe_count,
+          "limit":     limit,
+          "remaining": max(0, limit - current_user.recipe_count)
+      }
+    result["ingredient_status"] = _map_inventory_to_recipe(recipe_data.get("ingredients_used", []), inventory)
     return result
 
 

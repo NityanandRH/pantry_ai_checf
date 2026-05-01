@@ -75,7 +75,7 @@ function IngStatusBadge({ ingStatus }) {
           <div className="flex flex-wrap gap-1.5">
             {available.map((item,i)=>(
               <span key={i} className="pill-ok text-xs px-2.5 py-1 rounded-full font-medium">
-                {item.name}{item.quantity&&` (${item.quantity})`}
+                {typeof item === "string" ? item : `${item.name}${item.quantity ? ` (${item.quantity})` : ""}`}
               </span>
             ))}
           </div>
@@ -88,7 +88,7 @@ function IngStatusBadge({ ingStatus }) {
             <div key={i} className="flex items-center gap-2 py-1 text-sm">
               <span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:"#d97706"}}/>
               <span style={{color:"var(--text-primary)"}}>{item.name}</span>
-              <span className="text-xs" style={{color:"var(--text-faint)"}}>have {item.have}, need {item.need}</span>
+              <span className="text-xs" style={{color:"#d97706",opacity:0.8}}>have {item.have}, need {item.need}</span>
             </div>
           ))}
         </div>
@@ -99,7 +99,9 @@ function IngStatusBadge({ ingStatus }) {
           <div className="flex flex-wrap gap-1.5">
             {missing.map((item,i)=>(
               <span key={i} className="pill-bad text-xs px-2.5 py-1 rounded-full font-medium">
-                {item.name}{item.quantity&&` (${item.quantity})`}
+                {typeof item === "string"
+                  ? item
+                  : `${item.name}${item.quantity ? ` (${item.quantity})` : ""}`}
               </span>
             ))}
           </div>
@@ -190,7 +192,7 @@ function SuggestionCard({ suggestion, onCook, loading }) {
         className="btn-orange w-full justify-center"
         style={{width:"100%", padding:"0.5rem", borderRadius:"0.625rem", fontSize:"0.8rem"}}
       >
-        {loading ? <><Spinner size={3}/> Loading…</> : "🍳 Cook this"}
+        {loading ? <><Spinner size={3}/> Loading…</> : "👨‍🍳 Cook this"}
       </button>
     </div>
   )
@@ -222,6 +224,20 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
   const variationsRef = useRef()
   const [shopCopied, setShopCopied]   = useState(false)
   const [validResult, setValidResult] = useState(null)
+  const [showIngStatus, setShowIngStatus] = useState(true)  // hide/show toggle for ingredient check
+
+  // Free tier scan tracking (localStorage, resets daily)
+  const canScan = (type) => {
+    if (user?.tier !== "free") return true
+    const key = `pantry_scan_${type}_${new Date().toDateString()}_${user?.id||"u"}`
+    const count = parseInt(localStorage.getItem(key) || "0")
+    if (count >= 1) {
+      flash(`Free tier allows 1 ${type==="pantry" ? "pantry" : "dish"} scan per day — upgrade to Pro for unlimited`, "err")
+      return false
+    }
+    localStorage.setItem(key, count + 1)
+    return true
+  }
 
   // Dish image scan state
   const [dishScanBusy, setDishScanBusy]     = useState(false)
@@ -255,14 +271,35 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
   const flash = (msg, type="ok") => { setToast({msg,type}); setTimeout(()=>setToast(null),3500) }
 
   useEffect(()=>{ chatEndRef.current?.scrollIntoView({behavior:"smooth"}) },[chatMsgs])
-  useEffect(()=>{ setChatMsgs([]); setFbDone(false); setShowFeedback(false); setFbRating(""); setFbNotes(""); setValidResult(null) },[recipeId])
+  useEffect(()=>{
+    if (recipeId) {
+      setChatMsgs([]); setFbDone(false); setShowFeedback(false)
+      setFbRating(""); setFbNotes(""); setValidResult(null)
+    }
+  },[recipeId])
+
+  // Cmd/Ctrl+K → focus search input
+  const searchInputRef = useRef()
+  useEffect(() => {
+    const handler = e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+        searchInputRef.current?.select()
+      }
+    }
+    document.addEventListener("keydown", handler)
+    return () => document.removeEventListener("keydown", handler)
+  }, [])
 
   const applyRecipe = (data, id, mode, ingStatusObj=null, shopList=[]) => {
     setRecipe(data.recipe_json||data)
     setRecipeId(id); setRecipeMode(mode)
     setIngStatus(ingStatusObj); setShoppingList(shopList)
+    setShowIngStatus(true)  // always show ingredient status on new recipe load
+    setValidResult(null)
     setIsFav(data.is_favourite||false); setError(null)
-    setShowSuggestions(false) // hide suggestions when recipe loads
+    setShowSuggestions(false)
     setTimeout(()=>recipeRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),150)
   }
 
@@ -335,9 +372,9 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
   // ── Dish image scan ───────────────────────────────────────────────────────
   const handleDishScan = async (e) => {
     const file = e.target.files[0]; if (!file) return
+    if (!canScan("dish")) { if(dishImgRef.current) dishImgRef.current.value=""; return }
     setDishScanBusy(true); setDishScanResult(null); setError(null)
     try {
-      // Compress before upload
       const compressed = await new Promise((resolve, reject) => {
         const img = new Image()
         const url = URL.createObjectURL(file)
@@ -355,12 +392,11 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
         img.src = url
       })
       const base64 = await new Promise((resolve) => {
-          const reader = new FileReader()
-          reader.onload = () => resolve(reader.result.split(",")[1])
-          reader.readAsDataURL(compressed)
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result.split(",")[1])
+        reader.readAsDataURL(compressed)
       })
       const res = await api.post("/recipe/identify-dish", { image_b64: base64 })
-
       if (!res.data.name) { flash("Could not identify dish — try a clearer photo", "err"); return }
       setDishScanResult(res.data)
       setDishConfirmName(res.data.name)
@@ -412,17 +448,28 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
       const newHistory = [...history.slice(0,histIdx+1),{id:newId,name:newName}]
       setHistory(newHistory); setHistIdx(newHistory.length-1)
       setAlreadyShown(p=>[...p,newName])
-      applyRecipe(res.data, newId, "pantry")
+      applyRecipe(res.data, newId, "pantry", res.data.ingredient_status)
       onRecipeGenerated?.()
-    } catch(e) { setError("Generation failed: "+(e.response?.data?.detail||e.message)) }
+    } catch(e) {
+      if (e.response?.status === 402) {
+        setError("You've used all 3 free recipes this month. Upgrade to Pro for unlimited recipes!")
+      } else {
+        setError("Generation failed: "+(e.response?.data?.detail||e.message))
+      }
+    }
     finally { setGenBusy(false) }
   }
 
   const handlePrev = async () => {
     if (histIdx<=0) return
     try {
-      const res = await api.get(`/recipe/${history[histIdx-1].id}`)
-      setHistIdx(histIdx-1); applyRecipe(res.data, history[histIdx-1].id, "pantry")
+      const prevId = history[histIdx-1].id
+      const [recipeRes, statusRes] = await Promise.all([
+        api.get(`/recipe/${prevId}`),
+        api.get(`/recipe/${prevId}/validate`).catch(()=>null),
+      ])
+      setHistIdx(histIdx-1)
+      applyRecipe(recipeRes.data, prevId, "pantry", statusRes?.data || null)
     } catch { flash("Could not load previous recipe","err") }
   }
 
@@ -455,14 +502,17 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
     if (!recipe) return
     const ings=(recipe.ingredients_used||recipe.ingredients||[]).map(i=>`• ${i.name}${i.quantity?" — "+i.quantity:""}`).join("\n")
     const steps=(recipe.steps||[]).map((s,i)=>`${i+1}. ${s}`).join("\n")
-    navigator.clipboard?.writeText(`🍳 *${recipe.name}* — PantryChef\n\nIngredients:\n${ings}\n\nMethod:\n${steps}`)
+    navigator.clipboard?.writeText(`👨‍🍳 *${recipe.name}* — PantryChef\n\nIngredients:\n${ings}\n\nMethod:\n${steps}`)
       .then(()=>flash("Copied for WhatsApp!")).catch(()=>flash("Copy not supported","err"))
   }
 
   const showVariations = () => {
     if (!recipe?.variations?.length) {
-      recipeRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-      flash("No variations available for this recipe. Try searching the dish directly.")
+      if (recipeMode === "pantry") {
+        flash("Search this dish by name to see regional variations and substitutions")
+      } else {
+        flash("No variations included — try searching a different version of this dish")
+      }
       return
     }
     variationsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
@@ -511,32 +561,55 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
               </div>
             </div>
 
-            {/* Text search row */}
-            <div className="flex gap-2 mb-3">
-              <input value={searchTerm} onChange={e=>setSearchTerm(e.target.value)}
-                onKeyDown={e=>e.key==="Enter"&&handleSearch()}
-                placeholder="Idli, Biryani, Pasta…"
-                className="dk-input flex-1"/>
+            {/* ── Option 1: Scan any Dish ── highlighted primary */}
+            <input ref={dishImgRef} type="file" accept="image/*" className="hidden" onChange={handleDishScan}/>
+            <button
+              onClick={()=>dishImgRef.current.click()}
+              disabled={dishScanBusy || searchBusy}
+              className="w-full mb-3"
+              style={{
+                padding:"0.65rem", borderRadius:"0.75rem", display:"flex",
+                alignItems:"center", justifyContent:"center", gap:"0.5rem",
+                background:"rgba(249,115,22,0.1)", border:"1.5px solid var(--orange)",
+                color:"var(--orange)", fontWeight:800, fontSize:"0.85rem", cursor:"pointer",
+                transition:"all 0.15s",
+              }}
+              onMouseEnter={e=>{e.currentTarget.style.background="rgba(249,115,22,0.18)"}}
+              onMouseLeave={e=>{e.currentTarget.style.background="rgba(249,115,22,0.1)"}}
+            >
+              {dishScanBusy
+                ? <><Spinner size={4}/> Identifying dish…</>
+                : <><span>📸</span> Scan any Dish</>
+              }
+            </button>
+
+            {/* Divider */}
+            <div className="flex items-center gap-2 mb-3">
+              <div className="flex-1 h-px" style={{background:"var(--card-border)"}}/>
+              <span className="text-xs font-bold" style={{color:"var(--text-faint)"}}>or type it</span>
+              <div className="flex-1 h-px" style={{background:"var(--card-border)"}}/>
+            </div>
+
+            {/* ── Option 2: Text search ── */}
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <input ref={searchInputRef} value={searchTerm} onChange={e=>setSearchTerm(e.target.value)}
+                  onKeyDown={e=>e.key==="Enter"&&handleSearch()}
+                  placeholder="Idli, Biryani, Pasta…"
+                  className="dk-input w-full"/>
+                <span style={{
+                  position:"absolute", right:"0.5rem", top:"50%", transform:"translateY(-50%)",
+                  fontSize:"0.6rem", color:"var(--text-faint)", fontWeight:600,
+                  background:"var(--hover-bg)", padding:"0.1rem 0.35rem", borderRadius:"0.25rem",
+                  pointerEvents:"none",
+                }}>⌘K</span>
+              </div>
               <button onClick={handleSearch} disabled={searchBusy||!searchTerm.trim()}
                 className="btn-orange flex-shrink-0"
                 style={{borderRadius:"0.625rem",padding:"0.5rem 1rem"}}>
                 {searchBusy ? <Spinner size={4}/> : "Go"}
               </button>
             </div>
-
-            {/* Image scan row */}
-            <input ref={dishImgRef} type="file" accept="image/*" className="hidden" onChange={handleDishScan}/>
-            <button
-              onClick={()=>dishImgRef.current.click()}
-              disabled={dishScanBusy || searchBusy}
-              className="w-full btn-ghost text-xs"
-              style={{padding:"0.5rem", borderRadius:"0.625rem", display:"flex", alignItems:"center", justifyContent:"center", gap:"0.4rem"}}
-            >
-              {dishScanBusy
-                ? <><Spinner size={3}/> Identifying dish…</>
-                : <><span>📷</span> Scan a dish photo</>
-              }
-            </button>
 
             {/* Dish confirmation card */}
             {dishScanResult && (
@@ -736,7 +809,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                     style={{width:"100%",borderRadius:"0.875rem",padding:"0.875rem"}}>
                     {genBusy
                       ? <><Spinner size={5}/><span className="text-sm font-semibold">{agentMsg}</span></>
-                      : <><span className="text-xl">🍳</span> Surprise me</>
+                      : <><span className="text-xl">👨‍🍳</span> Surprise me</>
                     }
                   </button>
                 </div>
@@ -747,7 +820,16 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                   ? <span style={{color:"var(--orange)"}} className="font-semibold animate-pulse">Checking {ingredients.length} ingredients…</span>
                   : sugLoading
                     ? <span style={{color:"var(--orange)"}} className="font-semibold animate-pulse">Scanning your pantry…</span>
-                    : `${ingredients.length} ingredient${ingredients.length!==1?"s":""} available`}
+                    : user?.tier === "free"
+                      ? (
+                        <span>
+                          <span style={{color: user?.recipe_count >= 3 ? "#f87171" : user?.recipe_count >= 2 ? "#fbbf24" : "var(--text-faint)"}}>
+                            {user?.recipe_count||0}/3 free recipes used
+                          </span>
+                          {user?.recipe_count >= 3 && <span style={{color:"#f87171"}}> · Upgrade to Pro</span>}
+                        </span>
+                      )
+                      : `${ingredients.length} ingredient${ingredients.length!==1?"s":""} available`}
               </p>
 
               {/* Suggestions error */}
@@ -769,20 +851,26 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
 
           {/* Session nav */}
           {recipeMode==="pantry" && history.length>0 && (
-            <div className="dk-card px-5 py-3 flex items-center justify-between">
-              <button onClick={handlePrev} disabled={histIdx<=0}
-                className="text-sm font-bold transition-colors"
-                style={{color:histIdx<=0?"var(--text-faint)":"var(--text-muted)",cursor:histIdx<=0?"not-allowed":"pointer"}}>
-                ← Prev
-              </button>
-              <span className="text-xs" style={{color:"var(--text-faint)"}}>
-                {histIdx+1} / {history.length}
-              </span>
-              <button onClick={callGenerate} disabled={genBusy}
-                className="text-sm font-bold transition-colors"
-                style={{color:genBusy?"var(--text-faint)":"var(--orange)"}}>
-                Next →
-              </button>
+            <div className="dk-card px-5 py-3">
+              <div className="flex items-center justify-between mb-1">
+                <button onClick={handlePrev} disabled={histIdx<=0}
+                  className="text-sm font-bold transition-colors"
+                  style={{color:histIdx<=0?"var(--text-faint)":"var(--text-muted)",cursor:histIdx<=0?"not-allowed":"pointer"}}>
+                  ← Prev
+                </button>
+                <span className="text-xs font-semibold" style={{color:"var(--text-faint)"}}>
+                  {histIdx+1} / {history.length}
+                </span>
+                <button onClick={callGenerate} disabled={genBusy}
+                  className="text-sm font-bold transition-colors"
+                  style={{color:genBusy?"var(--text-faint)":"var(--orange)"}}>
+                  Next →
+                </button>
+              </div>
+              {/* Current recipe name breadcrumb */}
+              <p className="text-xs text-center truncate" style={{color:"var(--text-faint)"}}>
+                {history[histIdx]?.name || ""}
+              </p>
             </div>
           )}
 
@@ -916,8 +1004,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                     </div>
                   </div>
 
-                  {/* Ingredient status (Mode A only) */}
-                  {recipeMode==="pantry" && ingStatus && <IngStatusBadge ingStatus={ingStatus}/>}
+                  {/* Ingredient status (Mode A only) - shown in dedicated section below */}
 
                   {/* Shopping list (Mode B only) */}
                   {recipeMode==="direct" && shoppingList?.length>0&&(
@@ -925,22 +1012,70 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-xs font-black uppercase tracking-wider" style={{color:"#fbbf24"}}>🛒 Shopping list</p>
                         <button onClick={()=>{
-                          navigator.clipboard?.writeText(shoppingList.map(i=>`• ${i.name}${i.quantity?" ("+i.quantity+")":""}`).join("\n"))
+                          const text = shoppingList.map(i =>
+                            typeof i === "string" ? `• ${i}` : `• ${i.name}${i.quantity ? ` (${i.quantity})` : ""}`
+                          ).join("\n")
+                          navigator.clipboard?.writeText(text)
                             .then(()=>{setShopCopied(true);setTimeout(()=>setShopCopied(false),2000)})
-                        }} className="text-xs" style={{color:"var(--text-faint)"}}>
+                        }} className="text-xs font-semibold" style={{color:"#fbbf24",opacity:0.8}}>
                           {shopCopied?"✓ Copied":"Copy"}
                         </button>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
                         {shoppingList.map((item,i)=>(
                           <span key={i} className="pill-bad text-xs px-2.5 py-1 rounded-full font-medium">
-                            {item.name}{item.quantity&&` (${item.quantity})`}
+                            {typeof item === "string"
+                              ? item
+                              : `${item.name}${item.quantity ? ` (${item.quantity})` : ""}`}
                           </span>
                         ))}
                       </div>
                     </div>
                   )}
                 </div>
+
+                {/* ── Ingredient Status — always shown before recipe, both modes ── */}
+                {ingStatus && (
+                  showIngStatus ? (
+                    <div className="px-6 py-4" style={{borderBottom:"1px solid var(--card-border)", background:"rgba(0,0,0,0.15)"}}>
+                      <div className="flex items-center justify-between mb-3">
+                        <p className="text-xs font-black uppercase tracking-wider" style={{color:"var(--text-faint)"}}>
+                          🧾 Ingredient Check
+                        </p>
+                        <button
+                          onClick={()=>setShowIngStatus(false)}
+                          style={{color:"var(--text-faint)", background:"none", border:"none", fontSize:"0.72rem", cursor:"pointer", fontWeight:600}}
+                        >
+                          Hide ↑
+                        </button>
+                      </div>
+                      {/* Summary counters */}
+                      <div className="grid grid-cols-3 gap-2 mb-3">
+                        {[
+                          {label:"Available", count:(ingStatus.available||[]).length, color:"#4ade80", bg:"rgba(74,222,128,0.08)"},
+                          {label:"Low qty",   count:(ingStatus.low_qty||[]).length,   color:"#fbbf24", bg:"rgba(251,191,36,0.08)"},
+                          {label:"To buy",    count:(ingStatus.missing||[]).length,   color:"#f87171", bg:"rgba(248,113,113,0.08)"},
+                        ].map(s=>(
+                          <div key={s.label} className="rounded-xl py-2 text-center" style={{background:s.bg}}>
+                            <div className="text-xl font-black" style={{color:s.color}}>{s.count}</div>
+                            <div className="text-xs font-semibold" style={{color:"var(--text-muted)"}}>{s.label}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <IngStatusBadge ingStatus={ingStatus}/>
+                    </div>
+                  ) : (
+                    <div className="px-6 py-2 flex items-center justify-between" style={{borderBottom:"1px solid var(--card-border)", background:"rgba(0,0,0,0.1)"}}>
+                      <p className="text-xs" style={{color:"var(--text-faint)"}}>
+                        🧾 Ingredient check hidden
+                        {ingStatus.missing?.length>0&&<span style={{color:"#f87171", marginLeft:"0.5rem"}}>· {ingStatus.missing.length} to buy</span>}
+                      </p>
+                      <button onClick={()=>setShowIngStatus(true)} style={{color:"var(--orange)", background:"none", border:"none", fontSize:"0.72rem", cursor:"pointer", fontWeight:700}}>
+                        Show ↓
+                      </button>
+                    </div>
+                  )
+                )}
 
                 {/* Ingredients */}
                 <div className="px-6 pb-4">
@@ -953,7 +1088,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                         <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{background:"var(--orange)"}}/>
                         <span style={{color:"var(--text-primary)",fontWeight:500}}>{ing.name}</span>
                         {(ing.quantity||ing.is_optional)&&(
-                          <span className="text-xs ml-auto" style={{color:"var(--text-faint)"}}>
+                          <span className="text-xs ml-auto" style={{color:"var(--text-muted)"}}>
                             {ing.quantity}{ing.is_optional?" (opt)":""}
                           </span>
                         )}
@@ -1020,9 +1155,6 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
 
                 {/* Action toolbar */}
                 <div className="px-6 pb-6 flex flex-wrap gap-2">
-                  <button onClick={validateRecipe} className="btn-ghost text-xs" style={{padding:"0.4rem 0.75rem"}}>
-                    ✓ Check pantry
-                  </button>
                   <button onClick={showVariations} className="btn-ghost text-xs" style={{padding:"0.4rem 0.75rem"}}>
                     ✨ Variations
                   </button>
@@ -1032,18 +1164,6 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                     </button>
                   )}
                 </div>
-
-                {/* Validation result */}
-                {validResult && (
-                  <div className="mx-6 mb-4 p-3 rounded-xl text-xs" style={{background:"rgba(0,0,0,0.2)"}}>
-                    <p className="font-bold mb-1" style={{color:validResult.fully_available?"#4ade80":"#fbbf24"}}>
-                      {validResult.fully_available?"✓ All ingredients available":"⚠ Some items missing/low"}
-                    </p>
-                    {validResult.missing_now?.length>0&&(
-                      <p style={{color:"#f87171"}}>Missing: {validResult.missing_now.join(", ")}</p>
-                    )}
-                  </div>
-                )}
 
                 {/* Feedback */}
                 {showFeedback&&!fbDone&&(
@@ -1085,9 +1205,33 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                 </div>
                 <div className="px-5 py-4 space-y-3" style={{maxHeight:300,overflowY:"auto"}}>
                   {chatMsgs.length===0&&(
-                    <p className="text-xs text-center" style={{color:"var(--text-faint)"}}>
-                      e.g. "Can I substitute X?" or "How spicy will this be?"
-                    </p>
+                    <div className="text-center space-y-2">
+                      <p className="text-xs" style={{color:"var(--text-faint)"}}>
+                        Ask me anything about <span style={{color:"var(--orange)",fontWeight:600}}>{recipe.name}</span>
+                      </p>
+                      <div className="flex flex-wrap justify-center gap-1.5">
+                        {["Can I substitute anything?","How spicy is this?","Make it healthier"].map(q=>(
+                          <button key={q} onClick={()=>{
+                            setChatInput(q)
+                            setTimeout(()=>{
+                              const msg=q; setChatInput(""); setChatBusy(true)
+                              const newMsgs=[{role:"user",content:msg}]
+                              setChatMsgs(newMsgs)
+                              api.post(`/recipe/${recipeId}/chat`,{message:msg,chat_history:[]})
+                                .then(r=>{setChatMsgs(m=>[...m,{role:"assistant",content:r.data.reply}])})
+                                .catch(()=>{setChatMsgs(m=>[...m,{role:"assistant",content:"Sorry, couldn't respond."}])})
+                                .finally(()=>setChatBusy(false))
+                            },50)
+                          }} style={{
+                            fontSize:"0.68rem", padding:"0.25rem 0.65rem", borderRadius:"99px",
+                            background:"var(--input-bg)", border:"1px solid var(--card-border)",
+                            color:"var(--text-muted)", cursor:"pointer", fontWeight:500,
+                          }}>
+                            {q}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   )}
                   {chatMsgs.map((m,i)=>(
                     <div key={i} className={`flex ${m.role==="user"?"justify-end":"justify-start"}`}>

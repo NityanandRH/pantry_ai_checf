@@ -160,7 +160,8 @@ After using tools to confirm ingredients, return ONLY valid JSON. No preamble, n
   ],
   "health_warnings": [],
   "cooking_tips": ["One practical tip that actually helps"],
-  "serving_suggestion": "Serve hot with roti or steamed rice"
+  "serving_suggestion": "Serve hot with roti or steamed rice",
+  "variations": ["Variation name — brief description of the change"]
 }
 """
 
@@ -191,7 +192,7 @@ RULES:
 SCHEMA:
 {"name":"","cuisine":"","meal_type":"","cook_time_minutes":0,"servings":2,"difficulty":"beginner",
 "calorie_estimate":"","ingredients_used":[{"name":"","quantity":"","purpose":""}],
-"steps":[],"health_warnings":[],"cooking_tips":[],"serving_suggestion":""}"""
+"steps":[],"health_warnings":[],"cooking_tips":[],"serving_suggestion":"","variations":[]}"""
 
 MODE_A_FALLBACK_USER = """INGREDIENTS AVAILABLE:
 {inventory_json}
