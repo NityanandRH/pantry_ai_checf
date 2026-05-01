@@ -1,14 +1,37 @@
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import api from "./api"
-
+import { searchIngredients, getByCategory } from "./ingredientsList"
 
 const CATEGORIES = ["spices","lentils","vegetables","fruits","oils","flours","dairy","protein","grains","other"]
 const UNITS      = ["g","kg","ml","litre","pieces","tbsp","tsp","cup","bunch","packet"]
-const EMPTY_FORM = { name:"", category:"vegetables", quantity:"", unit:"g", expiry_date:"" }
+const EMPTY_FORM = { name:"", category:"vegetables", quantity:"", unit:"g", expiry_days:"" }
 
 const CAT_EMOJI = {
   spices:"🌶", lentils:"🫘", vegetables:"🥦", fruits:"🍎",
   oils:"🫙", flours:"🌾", dairy:"🥛", protein:"🥩", grains:"🍚", other:"📦",
+}
+
+// Expiry days options for the dropdown
+const EXPIRY_OPTIONS = [
+  { label:"1 day",    value:1  },
+  { label:"2 days",   value:2  },
+  { label:"3 days",   value:3  },
+  { label:"5 days",   value:5  },
+  { label:"1 week",   value:7  },
+  { label:"2 weeks",  value:14 },
+  { label:"1 month",  value:30 },
+  { label:"2 months", value:60 },
+  { label:"3 months", value:90 },
+  { label:"6 months", value:180},
+  { label:"1 year",   value:365},
+  { label:"Custom date…", value:"custom" },
+]
+
+function daysToDate(days) {
+  if (!days || days === "custom") return ""
+  const d = new Date()
+  d.setDate(d.getDate() + parseInt(days))
+  return d.toISOString().split("T")[0]
 }
 
 function expiryStatus(d) {
@@ -22,9 +45,168 @@ function expiryStatus(d) {
   }
 }
 
+// ── Smart Name Input with Autocomplete ──────────────────────────────────────
+function IngredientAutocomplete({ value, onChange, onSelect }) {
+  const [open, setOpen]         = useState(false)
+  const [suggestions, setSugs]  = useState([])
+  const [activeIdx, setActive]  = useState(-1)
+  const wrapRef = useRef()
+
+  useEffect(() => {
+    const results = searchIngredients(value)
+    setSugs(results)
+    setOpen(results.length > 0 && value.trim().length > 0)
+    setActive(-1)
+  }, [value])
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = e => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false) }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [])
+
+  const handleKey = e => {
+    if (!open) return
+    if (e.key === "ArrowDown") { e.preventDefault(); setActive(i => Math.min(i+1, suggestions.length-1)) }
+    if (e.key === "ArrowUp")   { e.preventDefault(); setActive(i => Math.max(i-1, -1)) }
+    if (e.key === "Enter" && activeIdx >= 0) { e.preventDefault(); pick(suggestions[activeIdx]) }
+    if (e.key === "Escape") setOpen(false)
+  }
+
+  const pick = (item) => {
+    onSelect(item)
+    setOpen(false)
+    setSugs([])
+  }
+
+  return (
+    <div ref={wrapRef} style={{position:"relative"}}>
+      <input
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onKeyDown={handleKey}
+        onFocus={() => suggestions.length > 0 && value.trim() && setOpen(true)}
+        placeholder="Type to search…"
+        className="dk-input"
+        autoComplete="off"
+        autoFocus
+      />
+      {open && (
+        <div style={{
+          position:"absolute", top:"calc(100% + 4px)", left:0, right:0,
+          background:"var(--card-bg)", border:"1px solid var(--card-border)",
+          borderRadius:"0.75rem", boxShadow:"0 8px 32px rgba(0,0,0,0.4)",
+          zIndex:100, overflow:"hidden",
+        }}>
+          {suggestions.map((s, i) => (
+            <div
+              key={s.name}
+              onMouseDown={() => pick(s)}
+              style={{
+                padding:"0.6rem 0.875rem",
+                background: i === activeIdx ? "var(--hover-bg)" : "transparent",
+                cursor:"pointer",
+                borderBottom: i < suggestions.length-1 ? "1px solid var(--card-border)" : "none",
+                display:"flex", alignItems:"center", gap:"0.5rem",
+              }}
+            >
+              <span style={{fontSize:"1rem"}}>{CAT_EMOJI[s.category]}</span>
+              <span style={{color:"var(--text-primary)", fontSize:"0.85rem", fontWeight:500}}>{s.name}</span>
+              <span style={{
+                marginLeft:"auto", fontSize:"0.65rem", fontWeight:700,
+                color:"var(--orange)", background:"rgba(249,115,22,0.12)",
+                padding:"0.15rem 0.5rem", borderRadius:"99px", textTransform:"uppercase"
+              }}>{s.category}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Category quick-pick pills ─────────────────────────────────────────────
+function CategoryQuickPick({ selectedCategory, onCategoryChange }) {
+  const [activeCat, setActiveCat] = useState(selectedCategory)
+  const [quickPicks, setQuickPicks] = useState([])
+  const [showPicks, setShowPicks] = useState(false)
+
+  const handleCat = (cat) => {
+    setActiveCat(cat)
+    onCategoryChange(cat)
+    setQuickPicks(getByCategory(cat).slice(0, 12))
+    setShowPicks(true)
+  }
+
+  return (
+    <div>
+      {/* Category pills */}
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {CATEGORIES.map(cat => (
+          <button
+            key={cat}
+            type="button"
+            onClick={() => handleCat(cat)}
+            style={{
+              padding:"0.3rem 0.75rem",
+              borderRadius:"99px",
+              fontSize:"0.72rem",
+              fontWeight:700,
+              cursor:"pointer",
+              transition:"all 0.15s",
+              background: activeCat === cat ? "var(--orange)" : "var(--input-bg)",
+              border: `1px solid ${activeCat === cat ? "var(--orange)" : "var(--card-border)"}`,
+              color: activeCat === cat ? "#fff" : "var(--text-muted)",
+            }}
+          >
+            {CAT_EMOJI[cat]} {cat.charAt(0).toUpperCase()+cat.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      {/* Quick ingredient picks for selected category */}
+      {showPicks && quickPicks.length > 0 && (
+        <div style={{marginTop:"0.5rem"}}>
+          <p style={{fontSize:"0.7rem", color:"var(--text-faint)", marginBottom:"0.4rem", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.05em"}}>
+            Quick add {activeCat}:
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {quickPicks.map(item => (
+              <button
+                key={item.name}
+                type="button"
+                onClick={() => onCategoryChange(activeCat, item.name)}
+                style={{
+                  padding:"0.25rem 0.65rem",
+                  borderRadius:"99px",
+                  fontSize:"0.72rem",
+                  fontWeight:600,
+                  cursor:"pointer",
+                  background:"var(--input-bg)",
+                  border:"1px solid var(--card-border)",
+                  color:"var(--text-muted)",
+                  transition:"all 0.15s",
+                }}
+                onMouseEnter={e=>{e.target.style.borderColor="var(--orange)";e.target.style.color="var(--orange)"}}
+                onMouseLeave={e=>{e.target.style.borderColor="var(--card-border)";e.target.style.color="var(--text-muted)"}}
+              >
+                {item.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Main Component ────────────────────────────────────────────────────────
 export default function Inventory({ ingredients, refreshInventory, API }) {
   const [showAdd, setShowAdd]         = useState(false)
   const [form, setForm]               = useState(EMPTY_FORM)
+  const [useCustomDate, setCustomDate] = useState(false)
+  const [customDateVal, setCustomDateVal] = useState("")
   const [editId, setEditId]           = useState(null)
   const [editForm, setEditForm]       = useState({})
   const [delConfirm, setDelConfirm]   = useState(null)
@@ -48,6 +230,11 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
 
   // ── CRUD ──────────────────────────────────────────────────────────────────
 
+  const getExpiryDate = () => {
+    if (useCustomDate) return customDateVal || null
+    return form.expiry_days ? daysToDate(form.expiry_days) : null
+  }
+
   const handleAdd = async () => {
     if (!form.name.trim()) { flash("Name is required","err"); return }
     setSaving(true)
@@ -55,9 +242,11 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
       await api.post(`/inventory`, {
         name: form.name.trim(), category: form.category,
         quantity: form.quantity ? parseFloat(form.quantity) : null,
-        unit: form.unit || null, expiry_date: form.expiry_date || null,
+        unit: form.unit || null,
+        expiry_date: getExpiryDate(),
       })
-      setForm(EMPTY_FORM); setShowAdd(false); refreshInventory(); flash("Ingredient added!")
+      setForm(EMPTY_FORM); setCustomDate(false); setCustomDateVal("")
+      setShowAdd(false); refreshInventory(); flash("Ingredient added!")
     } catch(e) { flash(e.response?.data?.detail||"Failed to add","err") }
     finally { setSaving(false) }
   }
@@ -86,42 +275,41 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
   }
 
   // ── Image scan ────────────────────────────────────────────────────────────
+  const handleScan = async (e) => {
+    const file = e.target.files[0]; if (!file) return
+    setScanning(true); setScanned([])
 
-const handleScan = async (e) => {
-  const file = e.target.files[0]; if (!file) return
-  setScanning(true); setScanned([])
+    try {
+      // Compress image client-side before upload
+      const compressed = await new Promise((resolve, reject) => {
+        const img = new Image()
+        const url = URL.createObjectURL(file)
+        img.onload = () => {
+          const MAX = 1024
+          const scale = Math.min(MAX / img.width, MAX / img.height, 1)
+          const canvas = document.createElement("canvas")
+          canvas.width  = Math.round(img.width  * scale)
+          canvas.height = Math.round(img.height * scale)
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height)
+          URL.revokeObjectURL(url)
+          canvas.toBlob(blob => blob ? resolve(blob) : reject("Compression failed"),
+            "image/jpeg", 0.85)
+        }
+        img.onerror = reject
+        img.src = url
+      })
 
-  try {
-    // ── Compress image client-side before upload ──
-    const compressed = await new Promise((resolve, reject) => {
-      const img = new Image()
-      const url = URL.createObjectURL(file)
-      img.onload = () => {
-        const MAX = 1024
-        const scale = Math.min(MAX / img.width, MAX / img.height, 1)
-        const canvas = document.createElement("canvas")
-        canvas.width  = Math.round(img.width  * scale)
-        canvas.height = Math.round(img.height * scale)
-        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height)
-        URL.revokeObjectURL(url)
-        canvas.toBlob(blob => blob ? resolve(blob) : reject("Compression failed"),
-          "image/jpeg", 0.85)
-      }
-      img.onerror = reject
-      img.src = url
-    })
+      const fd = new FormData()
+      fd.append("file", compressed, "scan.jpg")
 
-    const fd = new FormData()
-    fd.append("file", compressed, "scan.jpg")
-
-    const res = await api.post(`/inventory/scan-image`, fd)
-    const items = res.data.extracted_ingredients || []
-    if (!items.length) { flash("No ingredients detected", "err"); return }
-    setScanned(items)
-    setSelected(Object.fromEntries(items.map((_, i) => [i, true])))
-  } catch(e) { flash("Scan failed: " + (e.response?.data?.detail || e.message), "err") }
-  finally { setScanning(false); if (imgRef.current) imgRef.current.value = "" }
-}
+      const res = await api.post(`/inventory/scan-image`, fd)
+      const items = res.data.extracted_ingredients||[]
+      if (!items.length) { flash("No ingredients detected","err"); return }
+      setScanned(items)
+      setSelected(Object.fromEntries(items.map((_,i)=>[i,true])))
+    } catch(e) { flash("Scan failed: "+(e.response?.data?.detail||e.message),"err") }
+    finally { setScanning(false); if(imgRef.current) imgRef.current.value="" }
+  }
 
   const addScanned = async () => {
     const toAdd = scanned.filter((_,i)=>selected[i])
@@ -149,7 +337,6 @@ const handleScan = async (e) => {
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
-
   return (
     <div className="w-full">
 
@@ -190,42 +377,61 @@ const handleScan = async (e) => {
           + Add Ingredient
         </button>
         <input ref={imgRef} type="file" accept="image/*" className="hidden" onChange={handleScan}/>
-        <button onClick={()=>imgRef.current.click()} disabled={scanning}
-          className="btn-ghost hover-lift">
+        <button onClick={()=>imgRef.current.click()} disabled={scanning} className="btn-ghost hover-lift">
           {scanning ? "⏳ Scanning…" : "📷 Scan Image"}
         </button>
         <input ref={csvRef} type="file" accept=".csv" className="hidden" onChange={handleCsv}/>
-        <button onClick={()=>csvRef.current.click()} disabled={csvBusy}
-          className="btn-ghost hover-lift">
+        <button onClick={()=>csvRef.current.click()} disabled={csvBusy} className="btn-ghost hover-lift">
           {csvBusy ? "Importing…" : "📥 Import CSV"}
         </button>
         <span className="text-xs ml-2" style={{color:"var(--text-faint)"}}>
-          CSV columns: <code className="px-1 py-0.5 rounded text-xs" style={{background:"var(--input-bg)",color:"var(--text-muted)"}}>name, category, quantity, unit, expiry_date</code>
+          CSV: <code className="px-1 py-0.5 rounded text-xs" style={{background:"var(--input-bg)",color:"var(--text-muted)"}}>name, category, quantity, unit, expiry_date</code>
         </span>
       </div>
 
-      {/* ── Add form ── */}
+      {/* ── Smart Add Form ── */}
       {showAdd && (
         <div className="dk-card p-5 mb-5 hover-lift">
-          <h3 className="text-sm font-bold mb-4" style={{color:"var(--text-primary)"}}>Add ingredient</h3>
+          <h3 className="text-sm font-bold mb-1" style={{color:"var(--text-primary)"}}>Add ingredient</h3>
+          <p className="text-xs mb-4" style={{color:"var(--text-faint)"}}>Type to search or pick a category below</p>
+
+          {/* Category quick-pick */}
+          <div className="mb-4">
+            <CategoryQuickPick
+              selectedCategory={form.category}
+              onCategoryChange={(cat, name) => {
+                setForm(f => ({ ...f, category: cat, ...(name ? { name } : {}) }))
+              }}
+            />
+          </div>
+
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            {/* Name with autocomplete */}
             <div className="col-span-2 sm:col-span-3 lg:col-span-2">
               <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-muted)"}}>Name *</label>
-              <input value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}
-                onKeyDown={e=>e.key==="Enter"&&handleAdd()}
-                placeholder="e.g. Basmati Rice" className="dk-input" autoFocus/>
+              <IngredientAutocomplete
+                value={form.name}
+                onChange={name => setForm(f => ({ ...f, name }))}
+                onSelect={item => setForm(f => ({ ...f, name: item.name, category: item.category }))}
+              />
             </div>
+
+            {/* Category */}
             <div>
               <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-muted)"}}>Category *</label>
               <select value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))} className="dk-input">
                 {CATEGORIES.map(c=><option key={c} value={c}>{CAT_EMOJI[c]} {c.charAt(0).toUpperCase()+c.slice(1)}</option>)}
               </select>
             </div>
+
+            {/* Quantity */}
             <div>
               <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-muted)"}}>Quantity</label>
               <input type="number" value={form.quantity} onChange={e=>setForm(f=>({...f,quantity:e.target.value}))}
                 placeholder="500" min="0" className="dk-input"/>
             </div>
+
+            {/* Unit */}
             <div>
               <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-muted)"}}>Unit</label>
               <select value={form.unit} onChange={e=>setForm(f=>({...f,unit:e.target.value}))} className="dk-input">
@@ -233,17 +439,56 @@ const handleScan = async (e) => {
                 {UNITS.map(u=><option key={u} value={u}>{u}</option>)}
               </select>
             </div>
+
+            {/* Expiry — days picker */}
             <div>
-              <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-muted)"}}>Expiry date</label>
-              <input type="date" value={form.expiry_date} onChange={e=>setForm(f=>({...f,expiry_date:e.target.value}))} className="dk-input"
-                style={{colorScheme:"dark"}}/>
+              <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-muted)"}}>
+                Expires in
+              </label>
+              {!useCustomDate ? (
+                <select
+                  value={form.expiry_days}
+                  onChange={e => {
+                    if (e.target.value === "custom") { setCustomDate(true); return }
+                    setForm(f => ({ ...f, expiry_days: e.target.value }))
+                  }}
+                  className="dk-input"
+                >
+                  <option value="">No expiry</option>
+                  {EXPIRY_OPTIONS.map(o => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              ) : (
+                <div style={{display:"flex", gap:"0.4rem", alignItems:"center"}}>
+                  <input
+                    type="date"
+                    value={customDateVal}
+                    onChange={e => setCustomDateVal(e.target.value)}
+                    className="dk-input"
+                    style={{flex:1, colorScheme:"dark"}}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => { setCustomDate(false); setCustomDateVal("") }}
+                    style={{color:"var(--text-faint)", fontSize:"1rem", background:"none", border:"none", cursor:"pointer"}}
+                  >✕</button>
+                </div>
+              )}
+              {/* Preview calculated date */}
+              {!useCustomDate && form.expiry_days && (
+                <p style={{fontSize:"0.68rem", color:"var(--orange)", marginTop:"0.25rem"}}>
+                  📅 {new Date(daysToDate(form.expiry_days)).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"})}
+                </p>
+              )}
             </div>
           </div>
+
           <div className="flex gap-3 mt-4">
             <button onClick={handleAdd} disabled={saving} className="btn-orange">
               {saving ? "Saving…" : "Save ingredient"}
             </button>
-            <button onClick={()=>{setShowAdd(false);setForm(EMPTY_FORM)}} className="btn-ghost">
+            <button onClick={()=>{setShowAdd(false);setForm(EMPTY_FORM);setCustomDate(false);setCustomDateVal("")}} className="btn-ghost">
               Cancel
             </button>
           </div>
@@ -257,37 +502,24 @@ const handleScan = async (e) => {
             <h3 className="text-sm font-bold" style={{color:"#fb923c"}}>
               📷 {scanned.length} ingredient{scanned.length!==1?"s":""} detected
             </h3>
-            <div className="flex gap-3 text-xs">
-              <button onClick={()=>setSelected(Object.fromEntries(scanned.map((_,i)=>[i,true])))}
-                style={{color:"var(--orange-light)"}} className="font-semibold underline">All</button>
-              <button onClick={()=>setSelected({})}
-                style={{color:"var(--orange-light)"}} className="font-semibold underline">None</button>
-              <button onClick={()=>{setScanned([]);setSelected({})}}
-                style={{color:"var(--text-faint)"}} className="hover:text-white transition-colors">✕</button>
-            </div>
+            <button onClick={()=>{setScanned([]);setSelected({})}} style={{color:"var(--text-faint)",background:"none",border:"none",cursor:"pointer",fontSize:"1rem"}}>✕</button>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 mb-4">
+          <div className="flex flex-wrap gap-2 mb-4">
             {scanned.map((item,i)=>(
-              <label key={i} className="flex items-start gap-2.5 p-3 rounded-xl cursor-pointer transition-all"
+              <button key={i} onClick={()=>setSelected(s=>({...s,[i]:!s[i]}))}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all"
                 style={{
-                  background: selected[i] ? "var(--hover-bg)" : "var(--input-bg)",
-                  border: `1px solid ${selected[i] ? "#7c3a12" : "var(--card-border)"}`,
-                  opacity: selected[i] ? 1 : 0.55,
+                  background: selected[i] ? "rgba(249,115,22,0.15)" : "var(--input-bg)",
+                  border: `1px solid ${selected[i] ? "var(--orange)" : "var(--card-border)"}`,
+                  color: selected[i] ? "var(--orange)" : "var(--text-muted)",
                 }}>
-                <input type="checkbox" checked={!!selected[i]}
-                  onChange={e=>setSelected(p=>({...p,[i]:e.target.checked}))}
-                  className="w-4 h-4 mt-0.5 flex-shrink-0 accent-orange-500"/>
-                <div className="min-w-0">
-                  <span className="text-sm font-semibold capitalize block" style={{color:"var(--text-primary)"}}>{item.name}</span>
-                  <div className="flex gap-1.5 mt-0.5 flex-wrap">
-                    <span className={`text-xs px-1.5 py-0.5 rounded cat-${item.category||"other"}`}>{item.category}</span>
-                    {item.estimated_quantity && <span className="text-xs" style={{color:"var(--text-faint)"}}>{item.estimated_quantity}</span>}
-                  </div>
-                </div>
-              </label>
+                {selected[i] ? "✓ " : ""}{item.name}
+                {item.estimated_quantity && <span style={{opacity:0.6}}>{item.estimated_quantity}</span>}
+              </button>
             ))}
           </div>
-          <button onClick={addScanned} disabled={addingScanned||!Object.values(selected).some(Boolean)} className="btn-orange">
+          <button onClick={addScanned} disabled={addingScanned || !Object.values(selected).some(Boolean)}
+            className="btn-orange">
             {addingScanned ? "Adding…" : `Add ${Object.values(selected).filter(Boolean).length} selected`}
           </button>
         </div>
@@ -359,45 +591,57 @@ const handleScan = async (e) => {
                           {isEditing ? (
                             <>
                               <td className="px-4 py-2">
-                                <input value={editForm.name} onChange={e=>setEditForm(f=>({...f,name:e.target.value}))}
-                                  className="dk-input" style={{width:"100%"}}/>
+                                <input value={editForm.name} onChange={e=>setEditForm(f=>({...f,name:e.target.value}))} className="dk-input" style={{minWidth:120}}/>
                               </td>
                               <td className="px-4 py-2">
-                                <input type="number" value={editForm.quantity} onChange={e=>setEditForm(f=>({...f,quantity:e.target.value}))}
-                                  className="dk-input" style={{width:"5rem"}}/>
+                                <input type="number" value={editForm.quantity} onChange={e=>setEditForm(f=>({...f,quantity:e.target.value}))} className="dk-input" style={{width:80}}/>
                               </td>
                               <td className="px-4 py-2">
-                                <select value={editForm.unit} onChange={e=>setEditForm(f=>({...f,unit:e.target.value}))} className="dk-input" style={{width:"6rem"}}>
+                                <select value={editForm.unit} onChange={e=>setEditForm(f=>({...f,unit:e.target.value}))} className="dk-input">
                                   <option value="">—</option>
                                   {UNITS.map(u=><option key={u} value={u}>{u}</option>)}
                                 </select>
                               </td>
                               <td className="px-4 py-2">
-                                <input type="date" value={editForm.expiry_date} onChange={e=>setEditForm(f=>({...f,expiry_date:e.target.value}))}
-                                  className="dk-input" style={{width:"9rem",colorScheme:"dark"}}/>
+                                <input type="date" value={editForm.expiry_date} onChange={e=>setEditForm(f=>({...f,expiry_date:e.target.value}))} className="dk-input" style={{colorScheme:"dark"}}/>
                               </td>
-                              <td className="px-4 py-2 text-right whitespace-nowrap">
-                                <button onClick={()=>saveEdit(item.id)}
-                                  className="text-xs font-bold mr-3 transition-colors" style={{color:"#4ade80"}}>Save</button>
-                                <button onClick={()=>setEditId(null)}
-                                  className="text-xs transition-colors" style={{color:"var(--text-faint)"}}>Cancel</button>
+                              <td className="px-4 py-2">
+                                <div className="flex gap-2">
+                                  <button onClick={()=>saveEdit(item.id)} className="btn-orange" style={{padding:"0.3rem 0.75rem",fontSize:"0.75rem"}}>Save</button>
+                                  <button onClick={()=>setEditId(null)} className="btn-ghost" style={{padding:"0.3rem 0.75rem",fontSize:"0.75rem"}}>Cancel</button>
+                                </div>
                               </td>
                             </>
                           ) : (
                             <>
                               <td className="px-4 py-3 font-semibold" style={{color:"var(--text-primary)"}}>{item.name}</td>
-                              <td className="px-4 py-3" style={{color:"var(--text-muted)"}}>{item.quantity??'—'}</td>
-                              <td className="px-4 py-3" style={{color:"var(--text-faint)"}}>{item.unit??'—'}</td>
+                              <td className="px-4 py-3" style={{color:"var(--text-muted)"}}>{item.quantity ?? "—"}</td>
+                              <td className="px-4 py-3" style={{color:"var(--text-muted)"}}>{item.unit ?? "—"}</td>
                               <td className="px-4 py-3">
-                                {exp
-                                  ? <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${exp.cls}`}>{exp.icon} {exp.label}</span>
-                                  : <span style={{color:"var(--text-faint)"}} className="text-xs">—</span>}
+                                {exp ? (
+                                  <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${exp.cls}`}>
+                                    {exp.icon} {exp.label}
+                                  </span>
+                                ) : <span style={{color:"var(--text-faint)"}}>—</span>}
                               </td>
-                              <td className="px-4 py-3 text-right whitespace-nowrap">
-                                <button onClick={()=>startEdit(item)}
-                                  className="text-xs font-semibold mr-3 transition-colors" style={{color:"#93c5fd"}}>Edit</button>
-                                <button onClick={()=>setDelConfirm(item.id)}
-                                  className="text-xs font-semibold transition-colors" style={{color:"#f87171"}}>Delete</button>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <button onClick={()=>startEdit(item)}
+                                    className="text-xs font-semibold transition-colors"
+                                    style={{color:"var(--text-faint)"}}>Edit</button>
+                                  {delConfirm===item.id ? (
+                                    <div className="flex items-center gap-1">
+                                      <button onClick={()=>handleDelete(item.id)}
+                                        className="text-xs font-bold" style={{color:"#f87171"}}>Delete</button>
+                                      <button onClick={()=>setDelConfirm(null)}
+                                        className="text-xs" style={{color:"var(--text-faint)"}}>Cancel</button>
+                                    </div>
+                                  ) : (
+                                    <button onClick={()=>setDelConfirm(item.id)}
+                                      className="text-xs transition-colors"
+                                      style={{color:"var(--text-faint)"}}>✕</button>
+                                  )}
+                                </div>
                               </td>
                             </>
                           )}
@@ -410,28 +654,6 @@ const handleScan = async (e) => {
             </div>
           </div>
         ))
-      )}
-
-      {/* ── Delete confirm modal ── */}
-      {delConfirm && (
-        <div className="fixed inset-0 flex items-center justify-center z-50 p-4"
-          style={{background:"rgba(0,0,0,0.7)"}}>
-          <div className="dk-card p-6 max-w-sm w-full shadow-2xl">
-            <div className="text-3xl text-center mb-3">🗑️</div>
-            <h3 className="font-black text-center mb-1" style={{color:"var(--text-primary)"}}>Delete ingredient?</h3>
-            <p className="text-sm text-center mb-5" style={{color:"var(--text-muted)"}}>
-              Remove "{ingredients.find(i=>i.id===delConfirm)?.name}" from your pantry.
-            </p>
-            <div className="flex gap-3">
-              <button onClick={()=>handleDelete(delConfirm)}
-                className="flex-1 py-2.5 rounded-xl text-sm font-bold transition-colors"
-                style={{background:"#7f1d1d",color:"#fca5a5",border:"1px solid #7c2020"}}>
-                Delete
-              </button>
-              <button onClick={()=>setDelConfirm(null)} className="flex-1 btn-ghost py-2.5">Cancel</button>
-            </div>
-          </div>
-        </div>
       )}
     </div>
   )

@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import api from "./api"
 
-
 const CUISINES   = ["","Indian","North Indian","South Indian","Italian","Chinese","Continental"]
 const MEAL_TYPES = ["","Breakfast","Lunch","Dinner","Snacks","Dessert"]
 const COOK_TIMES = ["","Under 15 min","15–30 min","30–60 min","Over 1 hour"]
@@ -34,18 +33,22 @@ const MEAL_BG = {
   dessert:"linear-gradient(135deg,#1a0d16,#2e0d20)",
 }
 
+const DIFF_COLOR = {
+  beginner:    { bg:"rgba(74,222,128,0.12)", color:"#4ade80" },
+  intermediate:{ bg:"rgba(251,191,36,0.12)", color:"#fbbf24" },
+  chef:        { bg:"rgba(248,113,113,0.12)", color:"#f87171" },
+}
+
 const genId = () =>
   typeof crypto!=="undefined"&&crypto.randomUUID
     ? crypto.randomUUID()
-    : Math.random().toString(36).slice(2)+Date.now().toString(36)
-
-// ── Small helpers ─────────────────────────────────────────────────────────────
+    : Math.random().toString(36).slice(2)
 
 function Spinner({ size=4 }) {
   return (
-    <svg className={`animate-spin h-${size} w-${size} flex-shrink-0`} fill="none" viewBox="0 0 24 24">
+    <svg className={`animate-spin h-${size} w-${size}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
     </svg>
   )
 }
@@ -54,31 +57,34 @@ function FilterSel({ label, value, onChange, options }) {
   return (
     <div>
       <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-faint)"}}>{label}</label>
-      <select value={value} onChange={e=>onChange(e.target.value)} className="dk-input">
+      <select value={value} onChange={e=>onChange(e.target.value)} className="dk-input text-xs">
         {options.map(o=><option key={o} value={o}>{o||"Any"}</option>)}
       </select>
     </div>
   )
 }
 
-function IngStatusList({ ingStatus }) {
+function IngStatusBadge({ ingStatus }) {
   if (!ingStatus) return null
+  const { available=[], low_qty=[], missing=[] } = ingStatus
   return (
-    <div className="space-y-3">
-      {ingStatus.available?.length>0 && (
+    <div className="space-y-2 mt-3">
+      {available.length>0&&(
         <div>
-          <p className="text-xs font-black uppercase tracking-wider mb-1.5" style={{color:"#4ade80"}}>✓ Available in pantry</p>
+          <p className="text-xs font-black uppercase tracking-wider mb-1.5" style={{color:"#4ade80"}}>✓ Have it</p>
           <div className="flex flex-wrap gap-1.5">
-            {ingStatus.available.map((n,i)=>(
-              <span key={i} className="pill-ok text-xs px-2.5 py-1 rounded-full font-medium">{n}</span>
+            {available.map((item,i)=>(
+              <span key={i} className="pill-ok text-xs px-2.5 py-1 rounded-full font-medium">
+                {item.name}{item.quantity&&` (${item.quantity})`}
+              </span>
             ))}
           </div>
         </div>
       )}
-      {ingStatus.low_qty?.length>0 && (
+      {low_qty.length>0&&(
         <div>
-          <p className="text-xs font-black uppercase tracking-wider mb-1.5" style={{color:"#fbbf24"}}>⚠ Low quantity</p>
-          {ingStatus.low_qty.map((item,i)=>(
+          <p className="text-xs font-black uppercase tracking-wider mb-1.5" style={{color:"#d97706"}}>⚠ Low qty</p>
+          {low_qty.map((item,i)=>(
             <div key={i} className="flex items-center gap-2 py-1 text-sm">
               <span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:"#d97706"}}/>
               <span style={{color:"var(--text-primary)"}}>{item.name}</span>
@@ -87,11 +93,11 @@ function IngStatusList({ ingStatus }) {
           ))}
         </div>
       )}
-      {ingStatus.missing?.length>0 && (
+      {missing.length>0&&(
         <div>
           <p className="text-xs font-black uppercase tracking-wider mb-1.5" style={{color:"#f87171"}}>✗ Need to buy</p>
           <div className="flex flex-wrap gap-1.5">
-            {ingStatus.missing.map((item,i)=>(
+            {missing.map((item,i)=>(
               <span key={i} className="pill-bad text-xs px-2.5 py-1 rounded-full font-medium">
                 {item.name}{item.quantity&&` (${item.quantity})`}
               </span>
@@ -103,8 +109,94 @@ function IngStatusList({ ingStatus }) {
   )
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// ── Suggestion Card ───────────────────────────────────────────────────────────
+function SuggestionCard({ suggestion, onCook, loading }) {
+  const diff = DIFF_COLOR[suggestion.difficulty] || DIFF_COLOR.beginner
+  const allCookable = suggestion.missing_count === 0
 
+  return (
+    <div
+      className="dk-card p-4 hover-lift transition-all"
+      style={{
+        borderColor: allCookable ? "rgba(74,222,128,0.2)" : "var(--card-border)",
+        cursor:"default",
+      }}
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-black truncate" style={{color:"var(--text-primary)"}}>{suggestion.name}</p>
+          <p className="text-xs mt-0.5" style={{color:"var(--orange)"}}>{suggestion.cuisine}</p>
+        </div>
+        {allCookable && (
+          <span style={{
+            fontSize:"0.65rem", fontWeight:800, color:"#4ade80",
+            background:"rgba(74,222,128,0.12)", padding:"0.2rem 0.5rem",
+            borderRadius:"99px", whiteSpace:"nowrap", flexShrink:0,
+          }}>✓ Ready</span>
+        )}
+        {suggestion.missing_count > 0 && (
+          <span style={{
+            fontSize:"0.65rem", fontWeight:800, color:"#fbbf24",
+            background:"rgba(251,191,36,0.12)", padding:"0.2rem 0.5rem",
+            borderRadius:"99px", whiteSpace:"nowrap", flexShrink:0,
+          }}>+{suggestion.missing_count} needed</span>
+        )}
+      </div>
+
+      {/* Meta */}
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        {suggestion.cook_time_minutes && (
+          <span className="text-xs" style={{color:"var(--text-faint)"}}>⏱ {suggestion.cook_time_minutes}m</span>
+        )}
+        {suggestion.meal_type && (
+          <span className="text-xs" style={{color:"var(--text-faint)"}}>
+            {suggestion.meal_type.charAt(0).toUpperCase()+suggestion.meal_type.slice(1)}
+          </span>
+        )}
+        <span style={{
+          fontSize:"0.65rem", fontWeight:700, borderRadius:"99px",
+          padding:"0.15rem 0.5rem",
+          background: diff.bg, color: diff.color,
+        }}>
+          {suggestion.difficulty}
+        </span>
+      </div>
+
+      {/* Key ingredients */}
+      {suggestion.key_ingredients?.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-3">
+          {suggestion.key_ingredients.slice(0,5).map((ing,i)=>(
+            <span key={i} style={{
+              fontSize:"0.65rem", fontWeight:600,
+              background:"var(--input-bg)", border:"1px solid var(--card-border)",
+              color:"var(--text-faint)", borderRadius:"99px", padding:"0.1rem 0.45rem",
+            }}>{ing}</span>
+          ))}
+        </div>
+      )}
+
+      {/* Reason */}
+      {suggestion.reason && (
+        <p className="text-xs mb-3" style={{color:"var(--text-faint)", fontStyle:"italic"}}>
+          {suggestion.reason}
+        </p>
+      )}
+
+      {/* Cook button */}
+      <button
+        onClick={() => onCook(suggestion.name)}
+        disabled={loading}
+        className="btn-orange w-full justify-center"
+        style={{width:"100%", padding:"0.5rem", borderRadius:"0.625rem", fontSize:"0.8rem"}}
+      >
+        {loading ? <><Spinner size={3}/> Loading…</> : "🍳 Cook this"}
+      </button>
+    </div>
+  )
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, onRecipeGenerated, loadRecipeId, onLoadRecipeDone }) {
   const [searchTerm, setSearchTerm]   = useState("")
   const [searchBusy, setSearchBusy]   = useState(false)
@@ -112,6 +204,14 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
   const [showFilters, setShowFilters] = useState(false)
   const [genBusy, setGenBusy]         = useState(false)
   const [agentMsg, setAgentMsg]       = useState("")
+
+  // Suggestions state
+  const [suggestions, setSuggestions]         = useState([])
+  const [sugLoading, setSugLoading]           = useState(false)
+  const [sugError, setSugError]               = useState("")
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [cookingId, setCookingId]             = useState(null) // which suggestion is being cooked
+  const [shownSuggestions, setShownSuggestions] = useState([])
 
   const [recipe, setRecipe]               = useState(null)
   const [recipeId, setRecipeId]           = useState(null)
@@ -122,6 +222,12 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
   const variationsRef = useRef()
   const [shopCopied, setShopCopied]   = useState(false)
   const [validResult, setValidResult] = useState(null)
+
+  // Dish image scan state
+  const [dishScanBusy, setDishScanBusy]     = useState(false)
+  const [dishScanResult, setDishScanResult] = useState(null)  // {name, confidence, alternatives, cuisine, description}
+  const [dishConfirmName, setDishConfirmName] = useState("")   // editable confirmed name
+  const dishImgRef = useRef()
 
   const [sessionId]                   = useState(genId)
   const [history, setHistory]         = useState([])
@@ -146,32 +252,34 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
   const [toast, setToast]             = useState(null)
   const recipeRef = useRef()
 
-  const flash = (msg,type="ok") => { setToast({msg,type}); setTimeout(()=>setToast(null),3500) }
+  const flash = (msg, type="ok") => { setToast({msg,type}); setTimeout(()=>setToast(null),3500) }
 
   useEffect(()=>{ chatEndRef.current?.scrollIntoView({behavior:"smooth"}) },[chatMsgs])
   useEffect(()=>{ setChatMsgs([]); setFbDone(false); setShowFeedback(false); setFbRating(""); setFbNotes(""); setValidResult(null) },[recipeId])
-  // Load recipe from history when triggered via sidebar
-  useEffect(() => {
-       if (!loadRecipeId) return
-        api.get(`/recipe/${loadRecipeId}`)
-            .then(res => {
-                const data = res.data
-                const recipeData = typeof data.recipe_json === "string"
-                    ? JSON.parse(data.recipe_json)
-                    : data.recipe_json
-                applyRecipe(recipeData, data.id, data.mode || "pantry")
-            })
-            .catch(() => flash("Could not load recipe", "err"))
-            .finally(() => onLoadRecipeDone?.())
-    }, [loadRecipeId])
 
   const applyRecipe = (data, id, mode, ingStatusObj=null, shopList=[]) => {
     setRecipe(data.recipe_json||data)
     setRecipeId(id); setRecipeMode(mode)
     setIngStatus(ingStatusObj); setShoppingList(shopList)
     setIsFav(data.is_favourite||false); setError(null)
+    setShowSuggestions(false) // hide suggestions when recipe loads
     setTimeout(()=>recipeRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),150)
   }
+
+  // Load recipe from history when triggered via sidebar
+  useEffect(() => {
+    if (!loadRecipeId) return
+    api.get(`/recipe/${loadRecipeId}`)
+      .then(res => {
+        const data = res.data
+        const recipeData = typeof data.recipe_json === "string"
+          ? JSON.parse(data.recipe_json)
+          : data.recipe_json
+        applyRecipe(recipeData, data.id, data.mode || "pantry")
+      })
+      .catch(() => flash("Could not load recipe", "err"))
+      .finally(() => onLoadRecipeDone?.())
+  }, [loadRecipeId])
 
   // Agent status ticker
   const AGENT_MSGS = [
@@ -188,8 +296,89 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
     return ()=>clearInterval(t)
   },[genBusy])
 
-  // ── Mode B ────────────────────────────────────────────────────────────────
+  // ── Suggestions ───────────────────────────────────────────────────────────
+  const handleGetSuggestions = async () => {
+    if (!ingredients.length) { setError("Your pantry is empty. Add ingredients first."); return }
+    setSugLoading(true); setSugError(""); setError(null)
+    try {
+      const res = await api.post("/recipe/suggestions", {
+        filters: { ...filters },
+        already_shown: shownSuggestions,
+      })
+      const list = res.data.suggestions || []
+      setSuggestions(list)
+      setShownSuggestions(prev => [...prev, ...list.map(s => s.name)])
+      setShowSuggestions(true)
+    } catch(e) {
+      setSugError("Could not load suggestions. Try again.")
+    } finally {
+      setSugLoading(false)
+    }
+  }
 
+  const handleCookSuggestion = async (dishName) => {
+    setCookingId(dishName)
+    setSearchBusy(true); setError(null)
+    try {
+      const res = await api.post("/recipe/search", { dish_name: dishName })
+      applyRecipe(res.data, res.data.id, "direct", res.data.ingredient_status, res.data.shopping_list||[])
+      setHistory([]); setHistIdx(-1); setAlreadyShown([])
+    } catch(e) { setError("Could not load recipe: "+(e.response?.data?.detail||e.message)) }
+    finally { setSearchBusy(false); setCookingId(null) }
+  }
+
+  const handleRefreshSuggestions = () => {
+    setSuggestions([])
+    handleGetSuggestions()
+  }
+
+  // ── Dish image scan ───────────────────────────────────────────────────────
+  const handleDishScan = async (e) => {
+    const file = e.target.files[0]; if (!file) return
+    setDishScanBusy(true); setDishScanResult(null); setError(null)
+    try {
+      // Compress before upload
+      const compressed = await new Promise((resolve, reject) => {
+        const img = new Image()
+        const url = URL.createObjectURL(file)
+        img.onload = () => {
+          const MAX = 1024
+          const scale = Math.min(MAX / img.width, MAX / img.height, 1)
+          const canvas = document.createElement("canvas")
+          canvas.width  = Math.round(img.width  * scale)
+          canvas.height = Math.round(img.height * scale)
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height)
+          URL.revokeObjectURL(url)
+          canvas.toBlob(b => b ? resolve(b) : reject("Compression failed"), "image/jpeg", 0.85)
+        }
+        img.onerror = reject
+        img.src = url
+      })
+      const fd = new FormData(); fd.append("file", compressed, "dish.jpg")
+      const res = await api.post("/recipe/identify-dish", fd)
+      if (!res.data.name) { flash("Could not identify dish — try a clearer photo", "err"); return }
+      setDishScanResult(res.data)
+      setDishConfirmName(res.data.name)
+    } catch(e) { flash("Scan failed: "+(e.response?.data?.detail||e.message), "err") }
+    finally { setDishScanBusy(false); if(dishImgRef.current) dishImgRef.current.value="" }
+  }
+
+  const handleConfirmDish = () => {
+    if (!dishConfirmName.trim()) return
+    setSearchTerm(dishConfirmName.trim())
+    setDishScanResult(null)
+    // Trigger search with confirmed name directly
+    setSearchBusy(true); setError(null)
+    api.post("/recipe/search", { dish_name: dishConfirmName.trim() })
+      .then(res => {
+        applyRecipe(res.data, res.data.id, "direct", res.data.ingredient_status, res.data.shopping_list||[])
+        setHistory([]); setHistIdx(-1); setAlreadyShown([])
+      })
+      .catch(e => setError("Search failed: "+(e.response?.data?.detail||e.message)))
+      .finally(() => setSearchBusy(false))
+  }
+
+  // ── Mode B ────────────────────────────────────────────────────────────────
   const handleSearch = async () => {
     const term=searchTerm.trim(); if(!term) return
     setSearchBusy(true); setError(null)
@@ -202,7 +391,6 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
   }
 
   // ── Mode A ────────────────────────────────────────────────────────────────
-
   const callGenerate = async () => {
     if (!ingredients.length) { setError("Your pantry is empty. Add ingredients first."); return }
     setGenBusy(true); setError(null); setSearchTerm("")
@@ -220,6 +408,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
       setHistory(newHistory); setHistIdx(newHistory.length-1)
       setAlreadyShown(p=>[...p,newName])
       applyRecipe(res.data, newId, "pantry")
+      onRecipeGenerated?.()
     } catch(e) { setError("Generation failed: "+(e.response?.data?.detail||e.message)) }
     finally { setGenBusy(false) }
   }
@@ -267,44 +456,29 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
 
   const showVariations = () => {
     if (!recipe?.variations?.length) {
-      // No variations in current recipe — scroll to recipe name and flash it
       recipeRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-      flash("No variations available for this recipe. Try searching the dish directly.", "err")
+      flash("No variations available for this recipe. Try searching the dish directly.")
       return
     }
-    // Highlight and scroll to variations section
+    variationsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
     setVariationsHighlighted(true)
-    setTimeout(() => setVariationsHighlighted(false), 2500)
-    setTimeout(() => variationsRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 100)
+    setTimeout(()=>setVariationsHighlighted(false), 2000)
   }
 
-  const sendChat = async () => {
-    const msg=chatInput.trim(); if(!msg||!recipeId||chatBusy) return
-    const next=[...chatMsgs,{role:"user",content:msg}]
-    setChatMsgs(next); setChatInput(""); setChatBusy(true)
-    try {
-      const res = await api.post(`/recipe/${recipeId}/chat`,{message:msg,chat_history:chatMsgs})
-      setChatMsgs([...next,{role:"assistant",content:res.data.reply}])
-    } catch { setChatMsgs([...next,{role:"assistant",content:"Sorry, couldn't answer that. Try again."}]) }
-    finally { setChatBusy(false) }
-  }
-
-  const submitUserRecipe = async () => {
-    if (!urf.name.trim()) { flash("Name is required","err"); return }
+  const submitUrf = async () => {
+    if (!urf.name.trim()||!urf.ingredients.trim()||!urf.steps.trim()) {
+      flash("Fill in at least name, ingredients and steps","err"); return
+    }
     setUrfBusy(true)
     try {
-      await api.post(`/user-recipes`,{
-        name:urf.name.trim(), cuisine:urf.cuisine||null,
-        ingredients:urf.ingredients.split("\n").map(s=>s.trim()).filter(Boolean),
-        steps:urf.steps.split("\n").map(s=>s.trim()).filter(Boolean),
-      })
-      setUrf({name:"",cuisine:"",ingredients:"",steps:""}); setShowURF(false); flash("Recipe saved!")
+      await api.post("/user-recipe", urf)
+      setShowURF(false); setUrf({name:"",cuisine:"",ingredients:"",steps:""})
+      flash("Recipe submitted!")
     } catch { flash("Failed to save","err") }
     finally { setUrfBusy(false) }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
-
   return (
     <div className="w-full">
 
@@ -317,31 +491,131 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
         </div>
       )}
 
-      {/* ── Desktop: 2-column grid. Left = controls, Right = recipe ── */}
       <div className="flex flex-col lg:flex-row gap-6 items-start">
 
         {/* ═══ LEFT COLUMN — search + filters + cook ═══ */}
         <div className="w-full lg:w-96 flex-shrink-0 space-y-4">
 
-          {/* ── Mode B: Dish search ── */}
+          {/* ── Mode B: Recipe search ── */}
           <div className="dk-card p-5">
             <div className="flex items-center gap-2 mb-3">
               <span className="text-xl">🔍</span>
               <div>
-                <h3 className="text-sm font-black" style={{color:"var(--text-primary)"}}>Search a dish</h3>
+                <h3 className="text-sm font-black" style={{color:"var(--text-primary)"}}>Search a recipe</h3>
                 <p className="text-xs" style={{color:"var(--text-faint)"}}>Full recipe + what you have vs need</p>
               </div>
             </div>
-            <div className="flex gap-2">
+
+            {/* Text search row */}
+            <div className="flex gap-2 mb-3">
               <input value={searchTerm} onChange={e=>setSearchTerm(e.target.value)}
                 onKeyDown={e=>e.key==="Enter"&&handleSearch()}
                 placeholder="Idli, Biryani, Pasta…"
                 className="dk-input flex-1"/>
               <button onClick={handleSearch} disabled={searchBusy||!searchTerm.trim()}
-                className="btn-orange px-4 flex-shrink-0" style={{borderRadius:"0.625rem",padding:"0.5rem 1rem"}}>
-                {searchBusy ? <Spinner/> : "Go"}
+                className="btn-orange flex-shrink-0"
+                style={{borderRadius:"0.625rem",padding:"0.5rem 1rem"}}>
+                {searchBusy ? <Spinner size={4}/> : "Go"}
               </button>
             </div>
+
+            {/* Image scan row */}
+            <input ref={dishImgRef} type="file" accept="image/*" className="hidden" onChange={handleDishScan}/>
+            <button
+              onClick={()=>dishImgRef.current.click()}
+              disabled={dishScanBusy || searchBusy}
+              className="w-full btn-ghost text-xs"
+              style={{padding:"0.5rem", borderRadius:"0.625rem", display:"flex", alignItems:"center", justifyContent:"center", gap:"0.4rem"}}
+            >
+              {dishScanBusy
+                ? <><Spinner size={3}/> Identifying dish…</>
+                : <><span>📷</span> Scan a dish photo</>
+              }
+            </button>
+
+            {/* Dish confirmation card */}
+            {dishScanResult && (
+              <div className="mt-3 p-4 rounded-xl" style={{background:"var(--input-bg)", border:"1px solid var(--card-border)"}}>
+                <p className="text-xs font-black uppercase tracking-wider mb-2" style={{color:"var(--orange)"}}>
+                  📷 Dish identified
+                </p>
+
+                {/* Confidence badge */}
+                <div className="flex items-center gap-2 mb-3">
+                  <span style={{
+                    fontSize:"0.65rem", fontWeight:700, borderRadius:"99px", padding:"0.15rem 0.5rem",
+                    background: dishScanResult.confidence==="high" ? "rgba(74,222,128,0.15)" : "rgba(251,191,36,0.15)",
+                    color: dishScanResult.confidence==="high" ? "#4ade80" : "#fbbf24",
+                  }}>
+                    {dishScanResult.confidence} confidence
+                  </span>
+                  {dishScanResult.cuisine && (
+                    <span className="text-xs" style={{color:"var(--text-faint)"}}>{dishScanResult.cuisine}</span>
+                  )}
+                </div>
+
+                {/* Editable dish name */}
+                <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-muted)"}}>
+                  Is this correct? Edit if needed:
+                </label>
+                <input
+                  value={dishConfirmName}
+                  onChange={e=>setDishConfirmName(e.target.value)}
+                  className="dk-input mb-2 font-semibold"
+                  style={{color:"var(--text-primary)"}}
+                />
+
+                {/* Description */}
+                {dishScanResult.description && (
+                  <p className="text-xs mb-3" style={{color:"var(--text-faint)", fontStyle:"italic"}}>
+                    {dishScanResult.description}
+                  </p>
+                )}
+
+                {/* Alternatives */}
+                {dishScanResult.alternatives?.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-xs mb-1.5" style={{color:"var(--text-faint)"}}>Or pick an alternative:</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {dishScanResult.alternatives.map((alt, i) => (
+                        <button
+                          key={i}
+                          onClick={()=>setDishConfirmName(alt)}
+                          style={{
+                            fontSize:"0.72rem", fontWeight:600, borderRadius:"99px",
+                            padding:"0.2rem 0.65rem", cursor:"pointer",
+                            background: dishConfirmName===alt ? "rgba(249,115,22,0.15)" : "var(--card-bg)",
+                            border: `1px solid ${dishConfirmName===alt ? "var(--orange)" : "var(--card-border)"}`,
+                            color: dishConfirmName===alt ? "var(--orange)" : "var(--text-muted)",
+                          }}
+                        >
+                          {alt}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Action buttons */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleConfirmDish}
+                    disabled={!dishConfirmName.trim() || searchBusy}
+                    className="btn-orange flex-1 justify-center"
+                    style={{padding:"0.5rem", fontSize:"0.8rem"}}
+                  >
+                    {searchBusy ? <><Spinner size={3}/> Finding…</> : "✓ Yes, find this recipe"}
+                  </button>
+                  <button
+                    onClick={()=>setDishScanResult(null)}
+                    className="btn-ghost"
+                    style={{padding:"0.5rem 0.75rem", fontSize:"0.8rem"}}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* ── Divider ── */}
@@ -351,13 +625,13 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
             <div className="flex-1 h-px" style={{background:"var(--card-border)"}}/>
           </div>
 
-          {/* ── Mode A: Filters + Cook ── */}
+          {/* ── Mode A: Filters + Cook + Suggestions ── */}
           <div className="dk-card overflow-hidden">
             {/* Cook banner */}
             <div className="bg-cook-banner px-5 py-5" style={{minHeight:80}}>
               <h3 className="text-sm font-black" style={{color:"var(--text-primary)"}}>Cook from your pantry</h3>
               <p className="text-xs mt-0.5" style={{color:"var(--text-muted)"}}>
-                AI agent checks real availability before generating
+                Get suggestions or let the AI agent pick for you
               </p>
             </div>
 
@@ -366,7 +640,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
               <button onClick={()=>setShowFilters(v=>!v)}
                 className="w-full flex items-center justify-between text-sm font-semibold transition-colors"
                 style={{color:"var(--text-muted)"}}>
-                <span>⚙ Filters {Object.values(filters).some(v=>v&&v!==[]&&v!==0&&v!==""&&(Array.isArray(v)?v.length>0:true))?"(active)":""}</span>
+                <span>⚙ Filters {Object.values(filters).some(v=>Array.isArray(v)?v.length>0:(v!==0&&v!==""))?"(active)":""}</span>
                 <span style={{color:"var(--orange)"}}>{showFilters?"▲ Hide":"▼ Show"}</span>
               </button>
 
@@ -409,7 +683,6 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                 </div>
               )}
 
-              {/* Big CTA */}
               {ingredients.length === 0 ? (
                 <div className="text-center py-4">
                   <p className="text-sm font-semibold mb-1" style={{color:"var(--text-primary)"}}>Pantry is empty</p>
@@ -419,20 +692,65 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                   </button>
                 </div>
               ) : (
-                <button onClick={callGenerate} disabled={genBusy}
-                  className="btn-orange w-full justify-center py-4 text-base font-black"
-                  style={{width:"100%",borderRadius:"0.875rem",padding:"1rem"}}>
-                  {genBusy
-                    ? <><Spinner size={5}/><span className="text-sm font-semibold">{agentMsg}</span></>
-                    : <><span className="text-xl">🍳</span> Cook something today</>
-                  }
-                </button>
+                <div className="space-y-2">
+                  {/* Get / Show / Refresh Suggestions button */}
+                  <button
+                    onClick={
+                      sugLoading ? undefined
+                      : showSuggestions ? handleRefreshSuggestions
+                      : suggestions.length > 0 ? () => setShowSuggestions(true)  // just reveal, no re-fetch
+                      : handleGetSuggestions
+                    }
+                    disabled={sugLoading || genBusy}
+                    className="w-full justify-center"
+                    style={{
+                      width:"100%", borderRadius:"0.875rem", padding:"0.875rem",
+                      background:"var(--input-bg)",
+                      border:"1px solid var(--card-border)",
+                      color:"var(--text-primary)", fontWeight:800, fontSize:"0.9rem",
+                      cursor: sugLoading||genBusy ? "not-allowed" : "pointer",
+                      display:"flex", alignItems:"center", justifyContent:"center", gap:"0.5rem",
+                      transition:"all 0.15s",
+                    }}
+                    onMouseEnter={e=>{if(!sugLoading&&!genBusy){e.currentTarget.style.borderColor="var(--orange)";e.currentTarget.style.color="var(--orange)"}}}
+                    onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--card-border)";e.currentTarget.style.color="var(--text-primary)"}}
+                  >
+                    {sugLoading
+                      ? <><Spinner size={4}/><span className="text-sm">Finding recipes…</span></>
+                      : showSuggestions
+                        ? <><span>🔄</span> Refresh suggestions</>
+                        : suggestions.length > 0
+                          ? <><span>💡</span> Show {suggestions.length} suggestions</>
+                          : <><span>💡</span> Get suggestions ({ingredients.length} ingredients)</>
+                    }
+                  </button>
+
+                  {/* Generate now button */}
+                  <button onClick={callGenerate} disabled={genBusy || sugLoading}
+                    className="btn-orange w-full justify-center py-4 text-base font-black"
+                    style={{width:"100%",borderRadius:"0.875rem",padding:"0.875rem"}}>
+                    {genBusy
+                      ? <><Spinner size={5}/><span className="text-sm font-semibold">{agentMsg}</span></>
+                      : <><span className="text-xl">🍳</span> Surprise me</>
+                    }
+                  </button>
+                </div>
               )}
+
               <p className="text-xs text-center" style={{color:"var(--text-faint)"}}>
                 {genBusy
                   ? <span style={{color:"var(--orange)"}} className="font-semibold animate-pulse">Checking {ingredients.length} ingredients…</span>
-                  : `${ingredients.length} ingredient${ingredients.length!==1?"s":""} available · No hallucinations`}
+                  : sugLoading
+                    ? <span style={{color:"var(--orange)"}} className="font-semibold animate-pulse">Scanning your pantry…</span>
+                    : `${ingredients.length} ingredient${ingredients.length!==1?"s":""} available`}
               </p>
+
+              {/* Suggestions error */}
+              {sugError && (
+                <div className="rounded-xl px-4 py-3 text-xs font-medium" style={{background:"#2e0d0d",color:"#fca5a5",border:"1px solid #7c2020"}}>
+                  {sugError}
+                </div>
+              )}
 
               {/* Error */}
               {error && (
@@ -452,324 +770,357 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                 style={{color:histIdx<=0?"var(--text-faint)":"var(--text-muted)",cursor:histIdx<=0?"not-allowed":"pointer"}}>
                 ← Prev
               </button>
-              <span className="text-xs font-semibold" style={{color:"var(--text-faint)"}}>
+              <span className="text-xs" style={{color:"var(--text-faint)"}}>
                 {histIdx+1} / {history.length}
               </span>
               <button onClick={callGenerate} disabled={genBusy}
                 className="text-sm font-bold transition-colors"
                 style={{color:genBusy?"var(--text-faint)":"var(--orange)"}}>
-                {genBusy?"…":"Next →"}
+                Next →
               </button>
             </div>
           )}
 
-          {/* Submit user recipe */}
+          {/* User Recipe Form */}
           <div className="dk-card overflow-hidden">
             <button onClick={()=>setShowURF(v=>!v)}
-              className="w-full px-5 py-4 text-sm font-semibold text-left flex items-center gap-2 transition-colors"
+              className="w-full flex items-center justify-between px-5 py-4 text-sm font-semibold"
               style={{color:"var(--text-muted)"}}>
-              <span>📝</span>
-              {showURF ? "▲ Hide form" : "Submit your own recipe"}
+              <span>📝 Add your own recipe</span>
+              <span style={{color:"var(--orange)"}}>{showURF?"▲":"▼"}</span>
             </button>
             {showURF && (
-              <div className="px-5 pb-5 space-y-3" style={{borderTop:"1px solid var(--card-border)"}}>
-                <div className="grid grid-cols-2 gap-3 pt-4">
-                  <div>
-                    <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-faint)"}}>Name *</label>
-                    <input value={urf.name} onChange={e=>setUrf(f=>({...f,name:e.target.value}))}
-                      placeholder="Mum's Special Dal" className="dk-input"/>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-faint)"}}>Cuisine</label>
-                    <input value={urf.cuisine} onChange={e=>setUrf(f=>({...f,cuisine:e.target.value}))}
-                      placeholder="South Indian" className="dk-input"/>
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-faint)"}}>Ingredients (one per line) *</label>
-                  <textarea value={urf.ingredients} onChange={e=>setUrf(f=>({...f,ingredients:e.target.value}))}
-                    placeholder={"200g urad dal\n1 tsp cumin\n500ml water"} rows={4}
-                    className="dk-input" style={{resize:"none",fontFamily:"monospace",fontSize:"0.8rem"}}/>
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold mb-1" style={{color:"var(--text-faint)"}}>Steps (one per line) *</label>
-                  <textarea value={urf.steps} onChange={e=>setUrf(f=>({...f,steps:e.target.value}))}
-                    placeholder={"Soak dal for 4 hours\nGrind to a paste\nFerment for 8 hours"} rows={5}
-                    className="dk-input" style={{resize:"none"}}/>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={submitUserRecipe} disabled={urfBusy} className="btn-orange">
-                    {urfBusy?"Saving…":"Save Recipe"}
-                  </button>
-                  <button onClick={()=>{setShowURF(false);setUrf({name:"",cuisine:"",ingredients:"",steps:""})}} className="btn-ghost">
-                    Cancel
-                  </button>
-                </div>
+              <div className="px-5 pb-5 space-y-3">
+                <input value={urf.name} onChange={e=>setUrf(f=>({...f,name:e.target.value}))}
+                  placeholder="Recipe name" className="dk-input"/>
+                <input value={urf.cuisine} onChange={e=>setUrf(f=>({...f,cuisine:e.target.value}))}
+                  placeholder="Cuisine (optional)" className="dk-input"/>
+                <textarea value={urf.ingredients} onChange={e=>setUrf(f=>({...f,ingredients:e.target.value}))}
+                  placeholder="Ingredients (one per line)" rows={4} className="dk-input"/>
+                <textarea value={urf.steps} onChange={e=>setUrf(f=>({...f,steps:e.target.value}))}
+                  placeholder="Steps (one per line)" rows={4} className="dk-input"/>
+                <button onClick={submitUrf} disabled={urfBusy} className="btn-orange">
+                  {urfBusy?"Saving…":"Submit recipe"}
+                </button>
               </div>
             )}
           </div>
         </div>
 
-        {/* ═══ RIGHT COLUMN — recipe card + chat ═══ */}
-        <div className="flex-1 min-w-0 space-y-5" ref={recipeRef}>
-          {!recipe && (
-            <div className="dk-card text-center py-20">
-              <div className="text-6xl mb-4">🍽</div>
-              <p className="font-bold text-lg" style={{color:"var(--text-primary)"}}>Your recipe will appear here</p>
-              <p className="text-sm mt-1" style={{color:"var(--text-muted)"}}>
-                Search a dish above or click "Cook something today"
-              </p>
+        {/* ═══ RIGHT COLUMN — recipe display ═══ */}
+        <div className="flex-1 min-w-0">
+          {/* ── Suggestions — shown in main area above recipe ── */}
+          {showSuggestions && suggestions.length > 0 && (
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <p className="text-sm font-black" style={{color:"var(--text-primary)"}}>
+                    💡 Recipe ideas from your pantry
+                  </p>
+                  <p className="text-xs mt-0.5" style={{color:"var(--text-faint)"}}>
+                    Click any recipe to get the full instructions
+                  </p>
+                </div>
+                <button
+                  onClick={()=>setShowSuggestions(false)}
+                  style={{
+                    color:"var(--text-faint)", background:"var(--input-bg)",
+                    border:"1px solid var(--card-border)", borderRadius:"99px",
+                    padding:"0.25rem 0.75rem", fontSize:"0.75rem", cursor:"pointer", fontWeight:600,
+                  }}
+                >
+                  Hide
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                {suggestions.map((sug, i) => (
+                  <SuggestionCard
+                    key={i}
+                    suggestion={sug}
+                    onCook={handleCookSuggestion}
+                    loading={cookingId === sug.name && searchBusy}
+                  />
+                ))}
+              </div>
             </div>
           )}
 
-          {recipe && (
-            <div className="dk-card overflow-hidden">
+          {/* Unhide bar — shown when suggestions exist but are hidden */}
+          {!showSuggestions && suggestions.length > 0 && (
+            <div className="mb-4 flex items-center justify-between px-4 py-2.5 rounded-xl"
+              style={{background:"var(--input-bg)", border:"1px solid var(--card-border)"}}>
+              <p className="text-xs font-semibold" style={{color:"var(--text-faint)"}}>
+                💡 {suggestions.length} recipe suggestions hidden
+              </p>
+              <button
+                onClick={()=>setShowSuggestions(true)}
+                style={{
+                  color:"var(--orange)", background:"none", border:"none",
+                  fontSize:"0.75rem", cursor:"pointer", fontWeight:700,
+                }}
+              >
+                Show ↓
+              </button>
+            </div>
+          )}
 
-              {/* Header */}
-              <div className="recipe-hdr px-6 py-6"
-                style={{background: MEAL_BG[recipe.meal_type?.toLowerCase()] || "linear-gradient(135deg,#1e1204,#2e1a08)"}}>
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap gap-1.5 mb-2">
-                      {recipe.cuisine   && <span className="tag-orange">{recipe.cuisine}</span>}
-                      {recipe.meal_type && <span className="tag-dim">{recipe.meal_type}</span>}
-                      {recipe.difficulty&&<span className={`tag-dim diff-${recipe.difficulty?.toLowerCase()}`}
-                        style={{background:undefined,padding:"2px 10px",borderRadius:"999px",fontSize:"0.7rem",fontWeight:600}}>
-                        {recipe.difficulty}
-                      </span>}
-                      {recipeMode==="direct"&&<span className="tag-dim" style={{background:"#1a0d2e",color:"#c4b5fd",border:"1px solid #7c3fb5"}}>Full recipe</span>}
-                    </div>
-                    <h2 className="text-xl sm:text-2xl font-black leading-tight" style={{color:"var(--text-primary)"}}>{recipe.name}</h2>
-                    <div className="flex flex-wrap gap-4 mt-2 text-sm" style={{color:"var(--text-muted)"}}>
-                      {recipe.cook_time_minutes&&<span>⏱ {recipe.cook_time_minutes} min</span>}
-                      {recipe.servings&&<span>👥 {recipe.servings} servings</span>}
-                      {recipe.calorie_estimate&&<span>🔥 {recipe.calorie_estimate}</span>}
-                    </div>
-                  </div>
-                </div>
-                {/* Action row */}
-                <div className="flex flex-wrap gap-2 mt-4">
-                  <button onClick={toggleFav}
-                    className={`btn-ghost ${isFav?"":""}` }
-                    style={isFav?{background:"#7f1d1d",color:"#fca5a5",borderColor:"#7c2020"}:{}}>
-                    {isFav?"❤️ Saved":"🤍 Save"}
-                  </button>
-                  {!fbDone ? (
-                    <button onClick={()=>setShowFeedback(v=>!v)} className="btn-ghost">💬 Feedback</button>
-                  ) : (
-                    <span className="text-xs font-bold flex items-center px-3" style={{color:"#4ade80"}}>✓ Thanks!</span>
-                  )}
-                  <button onClick={showVariations} disabled={searchBusy} className="btn-ghost">🔀 Variations</button>
-                  <button onClick={shareRecipe} className="btn-ghost">📤 Share</button>
-                </div>
-              </div>
-
-              {/* Feedback panel */}
-              {showFeedback && !fbDone && (
-                <div className="px-6 py-4" style={{borderBottom:"1px solid var(--card-border)",background:"var(--hover-bg)"}}>
-                  <p className="text-sm font-bold mb-3" style={{color:"var(--text-primary)"}}>How was this recipe?</p>
-                  <div className="flex flex-wrap gap-2 mb-3">
-                    {FEEDBACK_OPTIONS.map(o=>(
-                      <button key={o.val} onClick={()=>setFbRating(o.val)}
-                        className={`fb-btn ${fbRating===o.val?"active":""}`}>
-                        {o.label}
-                      </button>
-                    ))}
-                  </div>
-                  <textarea value={fbNotes} onChange={e=>setFbNotes(e.target.value)}
-                    placeholder="Any other notes? (optional)" rows={2}
-                    className="dk-input mb-3" style={{resize:"none"}}/>
-                  <div className="flex gap-2">
-                    <button onClick={submitFeedback} className="btn-orange" style={{padding:"0.4rem 1.2rem"}}>Submit</button>
-                    <button onClick={()=>setShowFeedback(false)} className="btn-ghost" style={{padding:"0.4rem 1rem"}}>Cancel</button>
-                  </div>
-                </div>
-              )}
-
-              {/* Health warnings */}
-              {recipe.health_warnings?.length>0 && (
-                <div className="px-6 py-3" style={{borderBottom:"1px solid var(--card-border)",background:"#2e1e04"}}>
-                  <p className="text-xs font-black mb-1" style={{color:"#fbbf24"}}>⚠️ Health notes</p>
-                  {recipe.health_warnings.map((w,i)=><p key={i} className="text-xs" style={{color:"#fcd34d"}}>{w}</p>)}
-                </div>
-              )}
-
-              {/* Mode B: status summary */}
-              {recipeMode==="direct" && ingStatus && (
-                <div className="px-6 py-4" style={{borderBottom:"1px solid var(--card-border)"}}>
-                  <div className="grid grid-cols-3 gap-3 mb-4">
-                    {[
-                      {label:"Available", count:ingStatus.available?.length||0, cls:"pill-ok", bg:"#0d2e1a"},
-                      {label:"Low qty",   count:ingStatus.low_qty?.length||0,   cls:"pill-low",bg:"#2e1e04"},
-                      {label:"To buy",    count:ingStatus.missing?.length||0,   cls:"pill-bad",bg:"#2e0d0d"},
-                    ].map(s=>(
-                      <div key={s.label} className="rounded-xl py-3 text-center" style={{background:s.bg,border:"1px solid var(--card-border)"}}>
-                        <div className={`text-2xl font-black ${s.cls}`} style={{border:"none",background:"transparent",padding:0}}>{s.count}</div>
-                        <div className="text-xs font-semibold mt-0.5" style={{color:"var(--text-muted)"}}>{s.label}</div>
+          {/* ── Empty state / Recipe ── */}
+          {!recipe ? (
+            <div className="dk-card text-center py-20">
+              <div className="text-6xl mb-4">🍽</div>
+              <p className="font-bold text-xl mb-2" style={{color:"var(--text-primary)"}}>
+                What are we cooking today?
+              </p>
+              <p className="text-sm" style={{color:"var(--text-muted)"}}>
+                Get suggestions or search for a dish to get started
+              </p>
+            </div>
+          ) : (
+            <div ref={recipeRef}>
+              <div
+                className="dk-card overflow-hidden"
+                style={{background: MEAL_BG[recipe.meal_type?.toLowerCase()] || "var(--card-bg)"}}
+              >
+                {/* Recipe header */}
+                <div className="px-6 py-6">
+                  <div className="flex items-start justify-between gap-4 mb-4">
+                    <div className="min-w-0 flex-1">
+                      <h2 className="text-2xl font-black mb-1" style={{color:"var(--text-primary)"}}>{recipe.name}</h2>
+                      <div className="flex flex-wrap items-center gap-3 text-xs">
+                        {recipe.cuisine&&<span style={{color:"var(--orange)",fontWeight:700}}>{recipe.cuisine}</span>}
+                        {recipe.cook_time_minutes&&<span style={{color:"var(--text-faint)"}}>⏱ {recipe.cook_time_minutes} min</span>}
+                        {recipe.servings&&<span style={{color:"var(--text-faint)"}}>👥 {recipe.servings}</span>}
+                        {recipe.difficulty&&(
+                          <span style={{
+                            ...DIFF_COLOR[recipe.difficulty],
+                            padding:"0.15rem 0.5rem", borderRadius:"99px", fontWeight:700
+                          }}>{recipe.difficulty}</span>
+                        )}
+                        {recipe.calorie_estimate&&<span style={{color:"var(--text-faint)"}}>🔥 {recipe.calorie_estimate}</span>}
                       </div>
-                    ))}
-                  </div>
-                  <IngStatusList ingStatus={ingStatus}/>
-                </div>
-              )}
-
-              {/* Validation result */}
-              {validResult && (
-                <div className="px-6 py-4" style={{borderBottom:"1px solid var(--card-border)",background:"var(--hover-bg)"}}>
-                  <p className="text-xs font-black mb-2" style={{color:"#93c5fd"}}>📋 Current pantry check</p>
-                  <IngStatusList ingStatus={validResult}/>
-                </div>
-              )}
-
-              {/* Recipe body: 2-col (ingredients + steps) */}
-              <div className="p-6 grid grid-cols-1 md:grid-cols-5 gap-6">
-
-                {/* Ingredients */}
-                <div className="md:col-span-2">
-                  <h3 className="text-sm font-black mb-3 flex items-center gap-2" style={{color:"var(--text-primary)"}}>🧂 Ingredients</h3>
-                  {recipeMode==="pantry" ? (
-                    <div className="space-y-1.5">
-                      {(recipe.ingredients_used||[]).map((ing,i)=>(
-                        <div key={i} className="flex items-center justify-between py-1.5 text-sm"
-                          style={{borderBottom:"1px solid var(--card-border)"}}>
-                          <div className="flex items-center gap-2">
-                            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:"var(--orange)"}}/>
-                            <span className="font-medium" style={{color:"var(--text-primary)"}}>{ing.name}</span>
-                          </div>
-                          {ing.quantity&&<span className="text-xs" style={{color:"var(--text-faint)"}}>{ing.quantity}</span>}
-                        </div>
-                      ))}
                     </div>
-                  ) : (
-                    <IngStatusList ingStatus={ingStatus}/>
-                  )}
+                    {/* Action buttons */}
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button onClick={toggleFav} title={isFav?"Remove fav":"Save fav"}
+                        style={{fontSize:"1.4rem",background:"none",border:"none",cursor:"pointer",filter:isFav?"none":"grayscale(1)",opacity:isFav?1:0.5}}>
+                        ❤️
+                      </button>
+                      <button onClick={shareRecipe} className="btn-ghost" style={{padding:"0.4rem 0.75rem",fontSize:"0.75rem"}}>
+                        Share
+                      </button>
+                    </div>
+                  </div>
 
-                  {/* Shopping list */}
-                  {recipeMode==="direct" && shoppingList.length>0 && (
-                    <div className="mt-4 pt-4" style={{borderTop:"1px solid var(--card-border)"}}>
+                  {/* Ingredient status (Mode A only) */}
+                  {recipeMode==="pantry" && ingStatus && <IngStatusBadge ingStatus={ingStatus}/>}
+
+                  {/* Shopping list (Mode B only) */}
+                  {recipeMode==="direct" && shoppingList?.length>0&&(
+                    <div className="mt-3 p-3 rounded-xl" style={{background:"rgba(0,0,0,0.2)"}}>
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-black" style={{color:"#f87171"}}>🛒 Shopping ({shoppingList.length})</span>
+                        <p className="text-xs font-black uppercase tracking-wider" style={{color:"#fbbf24"}}>🛒 Shopping list</p>
                         <button onClick={()=>{
-                          navigator.clipboard?.writeText(shoppingList.join("\n"))
-                          setShopCopied(true); setTimeout(()=>setShopCopied(false),2000)
-                        }} className="text-xs font-semibold" style={{color:"var(--orange)"}}>
-                          {shopCopied?"✓ Copied!":"Copy"}
+                          navigator.clipboard?.writeText(shoppingList.map(i=>`• ${i.name}${i.quantity?" ("+i.quantity+")":""}`).join("\n"))
+                            .then(()=>{setShopCopied(true);setTimeout(()=>setShopCopied(false),2000)})
+                        }} className="text-xs" style={{color:"var(--text-faint)"}}>
+                          {shopCopied?"✓ Copied":"Copy"}
                         </button>
                       </div>
-                      <div className="rounded-xl px-3 py-2 space-y-1" style={{background:"#2e0d0d",border:"1px solid #7c2020"}}>
-                        {shoppingList.map((item,i)=><p key={i} className="text-xs" style={{color:"#fca5a5"}}>{item}</p>)}
+                      <div className="flex flex-wrap gap-1.5">
+                        {shoppingList.map((item,i)=>(
+                          <span key={i} className="pill-bad text-xs px-2.5 py-1 rounded-full font-medium">
+                            {item.name}{item.quantity&&` (${item.quantity})`}
+                          </span>
+                        ))}
                       </div>
                     </div>
                   )}
+                </div>
 
-                  {/* Validate button */}
-                  {recipeMode==="pantry" && !validResult && (
-                    <button onClick={validateRecipe}
-                      className="btn-ghost mt-4 w-full justify-center text-xs"
-                      style={{padding:"0.5rem",width:"100%"}}>
-                      🔄 Check against current pantry
-                    </button>
-                  )}
+                {/* Ingredients */}
+                <div className="px-6 pb-4">
+                  <h3 className="text-xs font-black uppercase tracking-widest mb-3" style={{color:"var(--text-faint)"}}>
+                    Ingredients
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {(recipe.ingredients_used||recipe.ingredients||[]).map((ing,i)=>(
+                      <div key={i} className="flex items-center gap-2 text-sm">
+                        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{background:"var(--orange)"}}/>
+                        <span style={{color:"var(--text-primary)",fontWeight:500}}>{ing.name}</span>
+                        {(ing.quantity||ing.is_optional)&&(
+                          <span className="text-xs ml-auto" style={{color:"var(--text-faint)"}}>
+                            {ing.quantity}{ing.is_optional?" (opt)":""}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 {/* Steps */}
-                <div className="md:col-span-3">
-                  <h3 className="text-sm font-black mb-3 flex items-center gap-2" style={{color:"var(--text-primary)"}}>👩‍🍳 Method</h3>
+                <div className="px-6 pb-4">
+                  <h3 className="text-xs font-black uppercase tracking-widest mb-3" style={{color:"var(--text-faint)"}}>
+                    Method
+                  </h3>
                   <ol className="space-y-3">
                     {(recipe.steps||[]).map((step,i)=>(
                       <li key={i} className="flex gap-3">
-                        <span className="step-num">{i+1}</span>
+                        <span className="flex-shrink-0 w-6 h-6 rounded-full text-xs font-black flex items-center justify-center"
+                          style={{background:"var(--orange)",color:"#fff"}}>{i+1}</span>
                         <p className="text-sm leading-relaxed pt-0.5" style={{color:"var(--text-primary)"}}>{step}</p>
                       </li>
                     ))}
                   </ol>
-                  {recipe.serving_suggestion&&(
-                    <div className="flex items-start gap-2 mt-4 pt-4" style={{borderTop:"1px solid var(--card-border)"}}>
-                      <span className="text-base flex-shrink-0">🍽</span>
-                      <p className="text-sm" style={{color:"var(--text-muted)"}}>{recipe.serving_suggestion}</p>
-                    </div>
-                  )}
-                  {recipe.cooking_tips?.length>0 && (
-                    <div className="mt-3 rounded-xl px-4 py-3" style={{background:"#0d1a2e",border:"1px solid #1a3a6e"}}>
-                      <p className="text-xs font-black mb-1.5" style={{color:"#93c5fd"}}>💡 Tips</p>
-                      {recipe.cooking_tips.map((t,i)=><p key={i} className="text-xs leading-relaxed" style={{color:"#bfdbfe"}}>{t}</p>)}
-                    </div>
-                  )}
-                  {recipeMode==="direct"&&recipe.variations?.length>0 && (
-                    <div ref={variationsRef}
-                      className="mt-3 rounded-xl px-4 py-3 transition-all duration-700"
-                      style={{
-                        background: variationsHighlighted ? "#2e1a3e" : "#1a0d2e",
-                        border: `1px solid ${variationsHighlighted ? "#9b59d0" : "#5a2da0"}`,
-                        boxShadow: variationsHighlighted ? "0 0 24px rgba(155,89,208,0.45)" : "none",
-                      }}>
-                      <p className="text-xs font-black mb-1.5" style={{color:"#c4b5fd"}}>🔀 Variations</p>
-                      {recipe.variations.map((v,i)=><p key={i} className="text-xs leading-relaxed" style={{color:"#ddd6fe"}}>• {v}</p>)}
-                    </div>
-                  )}
                 </div>
-              </div>
-            </div>
-          )}
 
-          {/* Chat */}
-          {recipe && recipeId && (
-            <div className="dk-card overflow-hidden">
-              <div className="px-5 py-4 flex items-center gap-3"
-                style={{background:"linear-gradient(135deg,#2e1508,#1e0d04)",borderBottom:"1px solid var(--card-border)"}}>
-                <span className="text-2xl">👨‍🍳</span>
-                <div>
-                  <h3 className="text-sm font-black" style={{color:"var(--text-primary)"}}>Cooking assistant</h3>
-                  <p className="text-xs" style={{color:"var(--text-muted)"}}>Ask anything about "{recipe.name}"</p>
-                </div>
-              </div>
+                {/* Tips + serving */}
+                {(recipe.cooking_tips?.length>0||recipe.serving_suggestion)&&(
+                  <div className="px-6 pb-4 space-y-3">
+                    {recipe.cooking_tips?.length>0&&(
+                      <div className="p-3 rounded-xl" style={{background:"rgba(249,115,22,0.08)"}}>
+                        <p className="text-xs font-black uppercase tracking-wider mb-2" style={{color:"var(--orange)"}}>💡 Tips</p>
+                        {recipe.cooking_tips.map((t,i)=><p key={i} className="text-xs" style={{color:"var(--text-muted)"}}>{t}</p>)}
+                      </div>
+                    )}
+                    {recipe.serving_suggestion&&(
+                      <p className="text-xs italic" style={{color:"var(--text-faint)"}}>🍽 {recipe.serving_suggestion}</p>
+                    )}
+                  </div>
+                )}
 
-              {chatMsgs.length===0 && (
-                <div className="px-5 py-4 flex flex-wrap gap-2">
-                  {["How do I know when the oil is ready?","Can I use ghee instead?","How to make it less spicy?","What to serve with this?"].map(q=>(
-                    <button key={q} onClick={()=>setChatInput(q)}
-                      className="text-xs px-3 py-1.5 rounded-full font-medium transition-colors hover-lift"
-                      style={{background:"var(--input-bg)",border:"1px solid var(--card-border)",color:"var(--text-muted)"}}>
-                      {q}
+                {/* Variations */}
+                {recipe.variations?.length>0&&(
+                  <div ref={variationsRef} className="px-6 pb-4">
+                    <p className={`text-xs font-black uppercase tracking-wider mb-2 transition-colors ${variationsHighlighted?"text-orange-400":""}`}
+                      style={{color:variationsHighlighted?"var(--orange)":"var(--text-faint)"}}>
+                      ✨ Variations
+                    </p>
+                    <div className="space-y-1">
+                      {recipe.variations.map((v,i)=>(
+                        <p key={i} className="text-xs" style={{color:"var(--text-muted)"}}>{v}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Health warnings */}
+                {recipe.health_warnings?.length>0&&(
+                  <div className="px-6 pb-4">
+                    <div className="p-3 rounded-xl" style={{background:"rgba(248,113,113,0.08)"}}>
+                      <p className="text-xs font-black uppercase tracking-wider mb-1" style={{color:"#f87171"}}>⚠ Health notes</p>
+                      {recipe.health_warnings.map((w,i)=><p key={i} className="text-xs" style={{color:"#fca5a5"}}>{w}</p>)}
+                    </div>
+                  </div>
+                )}
+
+                {/* Action toolbar */}
+                <div className="px-6 pb-6 flex flex-wrap gap-2">
+                  <button onClick={validateRecipe} className="btn-ghost text-xs" style={{padding:"0.4rem 0.75rem"}}>
+                    ✓ Check pantry
+                  </button>
+                  <button onClick={showVariations} className="btn-ghost text-xs" style={{padding:"0.4rem 0.75rem"}}>
+                    ✨ Variations
+                  </button>
+                  {!showFeedback&&!fbDone&&(
+                    <button onClick={()=>setShowFeedback(true)} className="btn-ghost text-xs" style={{padding:"0.4rem 0.75rem"}}>
+                      💬 Feedback
                     </button>
-                  ))}
+                  )}
                 </div>
-              )}
 
-              {chatMsgs.length>0 && (
-                <div className="px-5 py-4 max-h-72 overflow-y-auto space-y-3 chat-scroll">
-                  {chatMsgs.map((msg,i)=>(
-                    <div key={i} className={`flex ${msg.role==="user"?"justify-end":"justify-start"}`}>
-                      <div className="max-w-xs sm:max-w-md px-4 py-2.5 rounded-2xl text-sm leading-relaxed font-medium"
-                        style={msg.role==="user"
-                          ? {background:"var(--orange)",color:"#fff",borderBottomRightRadius:"4px"}
-                          : {background:"var(--hover-bg)",color:"var(--text-primary)",border:"1px solid var(--card-border)",borderBottomLeftRadius:"4px"}}>
-                        {msg.content}
+                {/* Validation result */}
+                {validResult && (
+                  <div className="mx-6 mb-4 p-3 rounded-xl text-xs" style={{background:"rgba(0,0,0,0.2)"}}>
+                    <p className="font-bold mb-1" style={{color:validResult.fully_available?"#4ade80":"#fbbf24"}}>
+                      {validResult.fully_available?"✓ All ingredients available":"⚠ Some items missing/low"}
+                    </p>
+                    {validResult.missing_now?.length>0&&(
+                      <p style={{color:"#f87171"}}>Missing: {validResult.missing_now.join(", ")}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Feedback */}
+                {showFeedback&&!fbDone&&(
+                  <div className="mx-6 mb-6 p-4 rounded-xl" style={{background:"rgba(0,0,0,0.2)"}}>
+                    <p className="text-xs font-black uppercase tracking-wider mb-3" style={{color:"var(--text-faint)"}}>Rate this recipe</p>
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {FEEDBACK_OPTIONS.map(o=>(
+                        <button key={o.val} onClick={()=>setFbRating(o.val)}
+                          className="text-xs px-3 py-1.5 rounded-xl font-semibold transition-all"
+                          style={{
+                            background:fbRating===o.val?"rgba(249,115,22,0.2)":"var(--input-bg)",
+                            border:`1px solid ${fbRating===o.val?"var(--orange)":"var(--card-border)"}`,
+                            color:fbRating===o.val?"var(--orange)":"var(--text-muted)",
+                          }}>
+                          {o.label}
+                        </button>
+                      ))}
+                    </div>
+                    <textarea value={fbNotes} onChange={e=>setFbNotes(e.target.value)}
+                      placeholder="Notes (optional)…" rows={2} className="dk-input mb-3 text-xs"/>
+                    <div className="flex gap-2">
+                      <button onClick={submitFeedback} disabled={!fbRating} className="btn-orange text-xs" style={{padding:"0.4rem 0.875rem"}}>
+                        Submit
+                      </button>
+                      <button onClick={()=>setShowFeedback(false)} className="btn-ghost text-xs" style={{padding:"0.4rem 0.875rem"}}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {fbDone&&<p className="px-6 pb-4 text-xs" style={{color:"#4ade80"}}>✓ Thanks for your feedback!</p>}
+              </div>
+
+              {/* Chat */}
+              <div className="dk-card mt-4">
+                <div className="px-5 py-4" style={{borderBottom:"1px solid var(--card-border)"}}>
+                  <h3 className="text-sm font-black" style={{color:"var(--text-primary)"}}>💬 Cooking assistant</h3>
+                  <p className="text-xs mt-0.5" style={{color:"var(--text-faint)"}}>Ask anything about this recipe</p>
+                </div>
+                <div className="px-5 py-4 space-y-3" style={{maxHeight:300,overflowY:"auto"}}>
+                  {chatMsgs.length===0&&(
+                    <p className="text-xs text-center" style={{color:"var(--text-faint)"}}>
+                      e.g. "Can I substitute X?" or "How spicy will this be?"
+                    </p>
+                  )}
+                  {chatMsgs.map((m,i)=>(
+                    <div key={i} className={`flex ${m.role==="user"?"justify-end":"justify-start"}`}>
+                      <div className="max-w-xs px-3 py-2 rounded-2xl text-xs leading-relaxed"
+                        style={{
+                          background:m.role==="user"?"var(--orange)":"var(--input-bg)",
+                          color:m.role==="user"?"#fff":"var(--text-primary)",
+                          borderRadius:m.role==="user"?"1rem 1rem 0.25rem 1rem":"1rem 1rem 1rem 0.25rem",
+                        }}>
+                        {m.content}
                       </div>
                     </div>
                   ))}
-                  {chatBusy && (
+                  {chatBusy&&(
                     <div className="flex justify-start">
-                      <div className="px-4 py-2.5 rounded-2xl text-sm flex items-center gap-2"
-                        style={{background:"var(--hover-bg)",color:"var(--text-muted)",border:"1px solid var(--card-border)"}}>
-                        <Spinner size={3}/><span className="animate-pulse">Thinking…</span>
+                      <div className="px-3 py-2 rounded-2xl text-xs" style={{background:"var(--input-bg)",color:"var(--text-faint)"}}>
+                        Thinking…
                       </div>
                     </div>
                   )}
                   <div ref={chatEndRef}/>
                 </div>
-              )}
-
-              <div className="px-5 py-4 flex gap-2" style={{borderTop:"1px solid var(--card-border)"}}>
-                <input value={chatInput} onChange={e=>setChatInput(e.target.value)}
-                  onKeyDown={e=>e.key==="Enter"&&!e.shiftKey&&sendChat()}
-                  placeholder="e.g. Can I skip the soaking step?"
-                  disabled={chatBusy}
-                  className="dk-input flex-1"/>
-                <button onClick={sendChat} disabled={chatBusy||!chatInput.trim()}
-                  className="btn-orange flex-shrink-0" style={{padding:"0.5rem 1.2rem",borderRadius:"0.625rem"}}>
-                  Send →
-                </button>
+                <div className="px-5 pb-4 flex gap-2">
+                  <input value={chatInput} onChange={e=>setChatInput(e.target.value)}
+                    onKeyDown={e=>{
+                      if(e.key==="Enter"&&chatInput.trim()&&!chatBusy){
+                        const msg=chatInput.trim(); setChatInput(""); setChatBusy(true)
+                        const newMsgs=[...chatMsgs,{role:"user",content:msg}]
+                        setChatMsgs(newMsgs)
+                        api.post(`/recipe/${recipeId}/chat`,{message:msg, chat_history:chatMsgs})
+                          .then(r=>{setChatMsgs(m=>[...m,{role:"assistant",content:r.data.reply}])})
+                          .catch(()=>{setChatMsgs(m=>[...m,{role:"assistant",content:"Sorry, couldn't respond."}])})
+                          .finally(()=>setChatBusy(false))
+                      }
+                    }}
+                    placeholder="Ask about this recipe…"
+                    className="dk-input flex-1 text-xs"/>
+                </div>
               </div>
             </div>
           )}

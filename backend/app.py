@@ -33,6 +33,7 @@ from prompts import (
     build_mode_b_prompt, build_chat_system,
     _format_ingredient,
 )
+from prompts import SUGGESTIONS_SYSTEM, SUGGESTIONS_USER, DISH_IDENTIFICATION_SYSTEM, DISH_IDENTIFICATION_USER
 
 # ---------------------------------------------------------------------------
 # Startup
@@ -572,6 +573,78 @@ def generate_recipe(
 
 
 # ---------------------------------------------------------------------------
+# RECIPE SUGGESTIONS — Fast lightweight list using GPT-4o-mini
+# ---------------------------------------------------------------------------
+
+class SuggestionsRequest(BaseModel):
+    filters: dict = {}
+    already_shown: list = []
+
+
+@app.post("/recipe/suggestions")
+def get_recipe_suggestions(
+        payload: SuggestionsRequest,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_user),
+):
+    """
+    Return 6-8 recipe name suggestions based on current pantry.
+    Uses GPT-4o-mini — fast and cheap, no agent loop.
+    Does NOT count against the recipe generation limit.
+    """
+    inventory = [i.to_dict() for i in db.query(Ingredient).filter(
+        Ingredient.user_id == current_user.id).all()]
+
+    if not inventory:
+        raise HTTPException(400, "Your pantry is empty. Add some ingredients first.")
+
+    inventory_json = json.dumps([{"name": i["name"], "category": i["category"]} for i in inventory])
+    filters_json = json.dumps(payload.filters)
+    already_shown = json.dumps(payload.already_shown)
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": SUGGESTIONS_SYSTEM},
+                {"role": "user", "content": SUGGESTIONS_USER.format(
+                    inventory_json=inventory_json,
+                    filters_json=filters_json,
+                    already_shown=already_shown,
+                )},
+            ],
+            temperature=0.8,
+            max_tokens=1500,
+        )
+        raw = resp.choices[0].message.content.strip()
+        suggestions = _parse_json_response(raw)
+
+        if not isinstance(suggestions, list):
+            raise ValueError("Expected a list of suggestions")
+
+        # Validate and sanitise each suggestion
+        valid = []
+        for s in suggestions:
+            if not isinstance(s, dict) or not s.get("name"):
+                continue
+            valid.append({
+                "name": s.get("name", ""),
+                "cuisine": s.get("cuisine", "Indian"),
+                "meal_type": s.get("meal_type", ""),
+                "cook_time_minutes": s.get("cook_time_minutes", None),
+                "difficulty": s.get("difficulty", "beginner"),
+                "key_ingredients": s.get("key_ingredients", []),
+                "missing_count": int(s.get("missing_count", 0)),
+                "reason": s.get("reason", ""),
+            })
+
+        return {"suggestions": valid[:8]}
+
+    except Exception as e:
+        raise HTTPException(500, f"Could not generate suggestions: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
 # RECIPE — Mode B: direct dish search (no guardrail — informational only)
 # ---------------------------------------------------------------------------
 
@@ -670,27 +743,52 @@ def get_recipe_history(
     rows = q.order_by(Recipe.generated_at.desc()).limit(limit).all()
     return [r.to_summary() for r in rows]
 
-@app.get("/recipe/{recipe_id}")
-def get_recipe_by_id(
-    recipe_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+
+@app.post("/recipe/identify-dish")
+async def identify_dish(
+        file: UploadFile = File(...),
+        current_user: User = Depends(get_current_user),
 ):
-    recipe = db.query(Recipe).filter(
-        Recipe.id == recipe_id,
-        Recipe.user_id == current_user.id
-    ).first()
-    if not recipe:
-        raise HTTPException(404, "Recipe not found")
-    return recipe.to_dict()
+    """
+    Identify the dish in an uploaded image using GPT-4o vision.
+    Returns dish name + alternatives for user confirmation.
+    Does NOT count against recipe generation limit.
+    """
+    contents = await file.read()
+    img = Image.open(io.BytesIO(contents))
+    img.thumbnail((1024, 1024), Image.LANCZOS)
+    buf = io.BytesIO()
+    fmt = img.format or "JPEG"
+    img.save(buf, format=fmt);
+    buf.seek(0)
+    b64 = base64.standard_b64encode(buf.read()).decode()
+
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": DISH_IDENTIFICATION_SYSTEM},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/{fmt.lower()};base64,{b64}", "detail": "high"}},
+                {"type": "text", "text": DISH_IDENTIFICATION_USER},
+            ]},
+        ],
+        max_tokens=500,
+    )
+
+    try:
+        result = _parse_json_response(resp.choices[0].message.content.strip())
+        if not isinstance(result, dict) or not result.get("name"):
+            return {"name": None, "confidence": "low", "alternatives": [], "cuisine": "", "description": ""}
+        return result
+    except Exception:
+        raise HTTPException(500, "Could not identify the dish from this image")
 
 
 @app.get("/recipe/{recipe_id}")
 def get_recipe(
     recipe_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
+    current_user: User = Depends(get_current_user)):
     r = db.query(Recipe).filter(Recipe.id == recipe_id, Recipe.user_id == current_user.id).first()
     if not r:
         raise HTTPException(404, "Recipe not found")
