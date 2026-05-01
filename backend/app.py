@@ -101,6 +101,9 @@ class FeedbackRequest(BaseModel):
     rating: str
     notes: Optional[str] = None
 
+class ImageScanRequest(BaseModel):
+    image_b64: str
+
 class UserRecipeCreate(BaseModel):
     name: str
     ingredients: List[str]
@@ -395,22 +398,19 @@ def delete_ingredient(
 
 @app.post("/inventory/scan-image")
 async def scan_image(
-    file: UploadFile = File(...),
+    payload: ImageScanRequest,
     current_user: User = Depends(get_current_user),
 ):
-    contents = await file.read()
-    img = Image.open(io.BytesIO(contents))
-    img.thumbnail((1024, 1024), Image.LANCZOS)
-    buf = io.BytesIO()
-    fmt = img.format or "JPEG"
-    img.save(buf, format=fmt); buf.seek(0)
-    b64 = base64.standard_b64encode(buf.read()).decode()
+    b64 = payload.image_b64
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": IMAGE_EXTRACTION_SYSTEM},
             {"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/{fmt.lower()};base64,{b64}", "detail": "high"}},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/jpeg;base64,{b64}",
+                    "detail": "high"
+                }},
                 {"type": "text", "text": IMAGE_EXTRACTION_USER},
             ]},
         ],
@@ -746,35 +746,24 @@ def get_recipe_history(
 
 @app.post("/recipe/identify-dish")
 async def identify_dish(
-        file: UploadFile = File(...),
-        current_user: User = Depends(get_current_user),
+    payload: ImageScanRequest,
+    current_user: User = Depends(get_current_user),
 ):
-    """
-    Identify the dish in an uploaded image using GPT-4o vision.
-    Returns dish name + alternatives for user confirmation.
-    Does NOT count against recipe generation limit.
-    """
-    contents = await file.read()
-    img = Image.open(io.BytesIO(contents))
-    img.thumbnail((1024, 1024), Image.LANCZOS)
-    buf = io.BytesIO()
-    fmt = img.format or "JPEG"
-    img.save(buf, format=fmt);
-    buf.seek(0)
-    b64 = base64.standard_b64encode(buf.read()).decode()
-
+    b64 = payload.image_b64
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {"role": "system", "content": DISH_IDENTIFICATION_SYSTEM},
             {"role": "user", "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/{fmt.lower()};base64,{b64}", "detail": "high"}},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/jpeg;base64,{b64}",
+                    "detail": "high"
+                }},
                 {"type": "text", "text": DISH_IDENTIFICATION_USER},
             ]},
         ],
         max_tokens=500,
     )
-
     try:
         result = _parse_json_response(resp.choices[0].message.content.strip())
         if not isinstance(result, dict) or not result.get("name"):

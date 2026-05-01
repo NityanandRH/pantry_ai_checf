@@ -354,8 +354,13 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
         img.onerror = reject
         img.src = url
       })
-      const fd = new FormData(); fd.append("file", compressed, "dish.jpg")
-      const res = await api.post("/recipe/identify-dish", fd)
+      const base64 = await new Promise((resolve) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result.split(",")[1])
+          reader.readAsDataURL(compressed)
+      })
+      const res = await api.post("/recipe/identify-dish", { image_b64: base64 })
+
       if (!res.data.name) { flash("Could not identify dish — try a clearer photo", "err"); return }
       setDishScanResult(res.data)
       setDishConfirmName(res.data.name)

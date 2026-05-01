@@ -299,10 +299,13 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
         img.src = url
       })
 
-      const fd = new FormData()
-      fd.append("file", compressed, "scan.jpg")
+      const base64 = await new Promise((resolve) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result.split(",")[1])
+          reader.readAsDataURL(compressed)
+       })
+      const res = await api.post(`/inventory/scan-image`, { image_b64: base64 })
 
-      const res = await api.post(`/inventory/scan-image`, fd)
       const items = res.data.extracted_ingredients||[]
       if (!items.length) { flash("No ingredients detected","err"); return }
       setScanned(items)
