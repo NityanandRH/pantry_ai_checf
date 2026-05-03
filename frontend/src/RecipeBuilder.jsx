@@ -226,19 +226,6 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
   const [validResult, setValidResult] = useState(null)
   const [showIngStatus, setShowIngStatus] = useState(true)  // hide/show toggle for ingredient check
 
-  // Free tier scan tracking (localStorage, resets daily)
-//   const canScan = (type) => {
-//     if (user?.tier !== "free") return true
-//     const key = `pantry_scan_${type}_${new Date().toDateString()}_${user?.id||"u"}`
-//     const count = parseInt(localStorage.getItem(key) || "0")
-//     if (count >= 1) {
-//       flash(`Free tier allows 1 ${type==="pantry" ? "pantry" : "dish"} scan per day — upgrade to Pro for unlimited`, "err")
-//       return false
-//     }
-//     localStorage.setItem(key, count + 1)
-//     return true
-//   }
-
   // Dish image scan state
   const [dishScanBusy, setDishScanBusy]     = useState(false)
   const [dishScanResult, setDishScanResult] = useState(null)  // {name, confidence, alternatives, cuisine, description}
@@ -434,7 +421,13 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
       const res = await api.post(`/recipe/search`,{dish_name:term})
       applyRecipe(res.data, res.data.id, "direct", res.data.ingredient_status, res.data.shopping_list||[])
       setHistory([]); setHistIdx(-1); setAlreadyShown([])
-    } catch(e) { setError("Search failed: "+(e.response?.data?.detail||e.message)) }
+    } catch(e) {
+      if (e.response?.status === 402) {
+        setError(e.response.data.detail?.message || "Daily recipe limit reached. Resets in 24 hours.")
+      } else {
+        setError("Search failed: " + (e.response?.data?.detail?.message || e.response?.data?.detail || e.message))
+      }
+    }
     finally { setSearchBusy(false) }
   }
 
@@ -459,7 +452,7 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
       onRecipeGenerated?.()
     } catch(e) {
       if (e.response?.status === 402) {
-        setError("You've used all 3 free recipes this month. Upgrade to Pro for unlimited recipes!")
+        setError(e.response.data.detail?.message || "Daily recipe limit reached. Resets in 24 hours.")
       } else {
         setError("Generation failed: "+(e.response?.data?.detail||e.message))
       }
@@ -513,18 +506,31 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
       .then(()=>flash("Copied for WhatsApp!")).catch(()=>flash("Copy not supported","err"))
   }
 
-  const showVariations = () => {
-    if (!recipe?.variations?.length) {
-      if (recipeMode === "pantry") {
-        flash("Search this dish by name to see regional variations and substitutions")
+  const showVariations = async () => {
+    if (!recipeId) return
+    setGenBusy(true); setError(null)
+    try {
+      const res = await api.post(`/recipe/${recipeId}/variations`)
+      const newId   = res.data.id
+      const newName = (res.data.recipe_json||{}).name || res.data.name || "Recipe"
+      const newHistory = [...history.slice(0, histIdx+1), {id: newId, name: newName}]
+      setHistory(newHistory); setHistIdx(newHistory.length - 1)
+      setAlreadyShown(p => [...p, newName])
+      applyRecipe(res.data, newId, "direct", res.data.ingredient_status, res.data.shopping_list||[])
+      onRecipeGenerated?.()
+      flash("✨ New variation generated!")
+    } catch(e) {
+      if (e.response?.status === 402) {
+        const err = e.response.data.detail?.error
+        if (err === "VARIATION_LIMIT_REACHED") {
+          setError(e.response.data.detail?.message || "Variation limit reached for this recipe.")
+        } else {
+          setError(e.response.data.detail?.message || "Daily recipe limit reached.")
+        }
       } else {
-        flash("No variations included — try searching a different version of this dish")
+        setError("Could not generate variation. Please try again.")
       }
-      return
-    }
-    variationsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-    setVariationsHighlighted(true)
-    setTimeout(()=>setVariationsHighlighted(false), 2000)
+    } finally { setGenBusy(false) }
   }
 
   const submitUrf = async () => {
@@ -830,10 +836,10 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
                     : user?.tier === "free"
                       ? (
                         <span>
-                          <span style={{color: user?.recipe_count >= 3 ? "#f87171" : user?.recipe_count >= 2 ? "#fbbf24" : "var(--text-faint)"}}>
-                            {user?.recipe_count||0}/3 free recipes used
+                          <span style={{color: user?.limit_reached ? "#f87171" : user?.recipes_remaining <= 1 ? "#fbbf24" : "var(--text-faint)"}}>
+                            {user?.recipe_count||0}/{user?.recipe_limit||3} daily recipes used
                           </span>
-                          {user?.recipe_count >= 3 && <span style={{color:"#f87171"}}> · Upgrade to Pro</span>}
+                          {user?.limit_reached && <span style={{color:"#f87171"}}> · Limit reached</span>}
                         </span>
                       )
                       : `${ingredients.length} ingredient${ingredients.length!==1?"s":""} available`}

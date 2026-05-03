@@ -5,12 +5,13 @@ All routes require is_admin=True (enforced via require_admin dependency).
 Mounted in app.py under the /admin prefix.
 
 Endpoints:
-  GET  /admin/stats          — overview numbers (users, recipes, activity)
-  GET  /admin/users          — paginated user list with per-user stats
-  PUT  /admin/users/{id}     — update a user's tier or admin status
-  GET  /admin/analytics      — time-series + distribution data for charts
-  POST /admin/ask            — LLM Q&A: admin types a question, GPT answers
-                               using real aggregated data as context
+  GET  /admin/stats              — overview numbers (users, recipes, activity)
+  GET  /admin/users              — paginated user list with per-user stats
+  PUT  /admin/users/{id}         — update tier, admin status, scan/recipe counts, credits
+  GET  /admin/analytics          — time-series + distribution data for charts
+  POST /admin/ask                — LLM Q&A: admin types a question, GPT answers
+  GET  /admin/app-feedback       — list all app feedback
+  POST /admin/app-feedback/analyse — LLM analysis of all feedback
 """
 
 import os
@@ -39,9 +40,12 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # ---------------------------------------------------------------------------
 
 class UserUpdate(BaseModel):
-    tier: Optional[str]    = None
-    is_admin: Optional[bool] = None
-    recipe_count: Optional[int] = None
+    tier:              Optional[str]   = None
+    is_admin:          Optional[bool]  = None
+    recipe_count:      Optional[int]   = None
+    pantry_scan_count: Optional[int]   = None
+    dish_scan_count:   Optional[int]   = None
+    credits_balance:   Optional[float] = None
 
 
 class AdminAskRequest(BaseModel):
@@ -59,33 +63,29 @@ class FeedbackAnalyseRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _build_data_context(db: Session) -> dict:
-    """
-    Aggregate key metrics from the database.
-    This dict is serialised to JSON and passed to GPT-4o as context
-    so the admin can ask natural language questions about real data.
-    """
     now = datetime.utcnow()
     last_7d  = now - timedelta(days=7)
     last_30d = now - timedelta(days=30)
 
     # ── User stats ──────────────────────────────────────────────────────────
-    total_users   = db.query(func.count(User.id)).scalar() or 0
-    free_users    = db.query(func.count(User.id)).filter(User.tier == "free").scalar() or 0
-    pro_users     = db.query(func.count(User.id)).filter(User.tier == "pro").scalar() or 0
-    admin_users   = db.query(func.count(User.id)).filter(User.is_admin == True).scalar() or 0
-    new_7d        = db.query(func.count(User.id)).filter(User.created_at >= last_7d).scalar() or 0
-    active_7d     = db.query(func.count(User.id)).filter(User.last_active >= last_7d).scalar() or 0
+    total_users    = db.query(func.count(User.id)).scalar() or 0
+    free_users     = db.query(func.count(User.id)).filter(User.tier == "free").scalar() or 0
+    pro_users      = db.query(func.count(User.id)).filter(User.tier == "pro").scalar() or 0
+    credits_users  = db.query(func.count(User.id)).filter(User.tier == "credits").scalar() or 0
+    admin_users    = db.query(func.count(User.id)).filter(User.is_admin == True).scalar() or 0
+    new_7d         = db.query(func.count(User.id)).filter(User.created_at >= last_7d).scalar() or 0
+    active_7d      = db.query(func.count(User.id)).filter(User.last_active >= last_7d).scalar() or 0
     inactive_users = total_users - active_7d
 
     # ── Recipe stats ─────────────────────────────────────────────────────────
-    total_recipes = db.query(func.count(Recipe.id)).scalar() or 0
+    total_recipes  = db.query(func.count(Recipe.id)).scalar() or 0
     pantry_recipes = db.query(func.count(Recipe.id)).filter(Recipe.mode == "pantry").scalar() or 0
     direct_recipes = db.query(func.count(Recipe.id)).filter(Recipe.mode == "direct").scalar() or 0
-    recipes_7d    = db.query(func.count(Recipe.id)).filter(Recipe.generated_at >= last_7d).scalar() or 0
-    recipes_today = db.query(func.count(Recipe.id)).filter(
+    recipes_7d     = db.query(func.count(Recipe.id)).filter(Recipe.generated_at >= last_7d).scalar() or 0
+    recipes_today  = db.query(func.count(Recipe.id)).filter(
         Recipe.generated_at >= now.replace(hour=0, minute=0, second=0)
     ).scalar() or 0
-    favourited    = db.query(func.count(Recipe.id)).filter(Recipe.is_favourite == True).scalar() or 0
+    favourited     = db.query(func.count(Recipe.id)).filter(Recipe.is_favourite == True).scalar() or 0
 
     # ── Top dishes ───────────────────────────────────────────────────────────
     top_dishes_rows = (
@@ -93,8 +93,7 @@ def _build_data_context(db: Session) -> dict:
         .filter(Recipe.mode == "pantry")
         .group_by(Recipe.name)
         .order_by(func.count(Recipe.id).desc())
-        .limit(10)
-        .all()
+        .limit(10).all()
     )
     top_dishes = [{"name": r.name, "count": r.count} for r in top_dishes_rows]
 
@@ -104,14 +103,11 @@ def _build_data_context(db: Session) -> dict:
         .filter(Recipe.mode == "direct", Recipe.dish_searched.isnot(None))
         .group_by(Recipe.dish_searched)
         .order_by(func.count(Recipe.id).desc())
-        .limit(10)
-        .all()
+        .limit(10).all()
     )
     top_searches = [{"dish": r.dish_searched, "count": r.count} for r in top_searches_rows]
 
     # ── Cuisine distribution ─────────────────────────────────────────────────
-    # Extract cuisine from recipe_json — use PostgreSQL JSON operators
-    # Fall back to Python-side counting if JSON queries fail
     cuisine_counts: dict = {}
     try:
         all_recipes = db.query(Recipe.recipe_json).limit(500).all()
@@ -132,8 +128,7 @@ def _build_data_context(db: Session) -> dict:
         db.query(Ingredient.name, func.count(Ingredient.id).label("count"))
         .group_by(Ingredient.name)
         .order_by(func.count(Ingredient.id).desc())
-        .limit(10)
-        .all()
+        .limit(10).all()
     )
     top_ingredients = [{"name": r.name, "count": r.count} for r in top_ingredient_rows]
 
@@ -148,8 +143,7 @@ def _build_data_context(db: Session) -> dict:
     # ── Feedback distribution ─────────────────────────────────────────────────
     feedback_rows = (
         db.query(Feedback.rating, func.count(Feedback.id).label("count"))
-        .group_by(Feedback.rating)
-        .all()
+        .group_by(Feedback.rating).all()
     )
     feedback_dist = [{"rating": r.rating, "count": r.count} for r in feedback_rows]
 
@@ -162,10 +156,7 @@ def _build_data_context(db: Session) -> dict:
             Recipe.generated_at >= day_start,
             Recipe.generated_at < day_end,
         ).scalar() or 0
-        daily_counts.append({
-            "date":  day_start.strftime("%d %b"),
-            "count": count,
-        })
+        daily_counts.append({"date": day_start.strftime("%d %b"), "count": count})
 
     # ── Users per day (last 14 days) ─────────────────────────────────────────
     daily_signups = []
@@ -176,16 +167,13 @@ def _build_data_context(db: Session) -> dict:
             User.created_at >= day_start,
             User.created_at < day_end,
         ).scalar() or 0
-        daily_signups.append({
-            "date":  day_start.strftime("%d %b"),
-            "count": count,
-        })
+        daily_signups.append({"date": day_start.strftime("%d %b"), "count": count})
 
     return {
         "generated_at": now.isoformat(),
         "users": {
             "total": total_users, "free": free_users,
-            "pro": pro_users, "admins": admin_users,
+            "pro": pro_users, "credits": credits_users, "admins": admin_users,
             "new_last_7_days": new_7d, "active_last_7_days": active_7d,
             "inactive": inactive_users,
         },
@@ -204,8 +192,8 @@ def _build_data_context(db: Session) -> dict:
             "category_distribution": category_distribution,
         },
         "feedback_distribution": feedback_dist,
-        "daily_recipe_counts":  daily_counts,
-        "daily_signup_counts":  daily_signups,
+        "daily_recipe_counts":   daily_counts,
+        "daily_signup_counts":   daily_signups,
     }
 
 
@@ -218,30 +206,31 @@ def get_stats(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """Quick KPI numbers for the dashboard header cards."""
     now = datetime.utcnow()
     last_7d = now - timedelta(days=7)
 
-    total_users   = db.query(func.count(User.id)).scalar() or 0
-    total_recipes = db.query(func.count(Recipe.id)).scalar() or 0
-    active_7d     = db.query(func.count(User.id)).filter(User.last_active >= last_7d).scalar() or 0
-    recipes_today = db.query(func.count(Recipe.id)).filter(
+    total_users    = db.query(func.count(User.id)).scalar() or 0
+    total_recipes  = db.query(func.count(Recipe.id)).scalar() or 0
+    active_7d      = db.query(func.count(User.id)).filter(User.last_active >= last_7d).scalar() or 0
+    recipes_today  = db.query(func.count(Recipe.id)).filter(
         Recipe.generated_at >= now.replace(hour=0, minute=0, second=0)
     ).scalar() or 0
-    free_users    = db.query(func.count(User.id)).filter(User.tier == "free").scalar() or 0
-    pro_users     = db.query(func.count(User.id)).filter(User.tier == "pro").scalar() or 0
-    total_ingr    = db.query(func.count(Ingredient.id)).scalar() or 0
+    free_users     = db.query(func.count(User.id)).filter(User.tier == "free").scalar() or 0
+    pro_users      = db.query(func.count(User.id)).filter(User.tier == "pro").scalar() or 0
+    credits_users  = db.query(func.count(User.id)).filter(User.tier == "credits").scalar() or 0
+    total_ingr     = db.query(func.count(Ingredient.id)).scalar() or 0
     total_feedback = db.query(func.count(Feedback.id)).scalar() or 0
 
     return {
-        "total_users":     total_users,
-        "total_recipes":   total_recipes,
-        "active_7d":       active_7d,
-        "recipes_today":   recipes_today,
-        "free_users":      free_users,
-        "pro_users":       pro_users,
+        "total_users":       total_users,
+        "total_recipes":     total_recipes,
+        "active_7d":         active_7d,
+        "recipes_today":     recipes_today,
+        "free_users":        free_users,
+        "pro_users":         pro_users,
+        "credits_users":     credits_users,
         "total_ingredients": total_ingr,
-        "total_feedback":  total_feedback,
+        "total_feedback":    total_feedback,
     }
 
 
@@ -258,10 +247,6 @@ def list_users(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """
-    Paginated list of all users with their recipe counts and ingredient counts.
-    Supports filtering by search (email/name) and tier.
-    """
     q = db.query(User)
     if search:
         q = q.filter(
@@ -294,7 +279,7 @@ def list_users(
 
 
 # ---------------------------------------------------------------------------
-# PUT /admin/users/{user_id} — update tier / admin status
+# PUT /admin/users/{user_id} — update tier / admin status / counters / credits
 # ---------------------------------------------------------------------------
 
 @router.put("/users/{user_id}")
@@ -304,7 +289,7 @@ def update_user(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """Update a user's tier, admin status, or manually reset recipe count."""
+    """Update a user's tier, admin status, or manually reset any usage counter."""
     if user_id == admin.id and payload.is_admin is False:
         raise HTTPException(400, "You cannot remove your own admin status.")
 
@@ -317,10 +302,24 @@ def update_user(
         if payload.tier not in valid_tiers:
             raise HTTPException(400, f"Invalid tier. Must be one of: {', '.join(valid_tiers)}")
         user.tier = payload.tier
+
     if payload.is_admin is not None:
         user.is_admin = payload.is_admin
+
     if payload.recipe_count is not None:
         user.recipe_count = max(0, payload.recipe_count)
+        user.recipe_reset_date = None   # clear window so daily counter restarts fresh
+
+    if payload.pantry_scan_count is not None:
+        user.pantry_scan_count = max(0, payload.pantry_scan_count)
+        user.pantry_scan_reset_date = None
+
+    if payload.dish_scan_count is not None:
+        user.dish_scan_count = max(0, payload.dish_scan_count)
+        user.dish_scan_reset_date = None
+
+    if payload.credits_balance is not None:
+        user.credits_balance = max(0.0, payload.credits_balance)
 
     db.commit()
     db.refresh(user)
@@ -336,11 +335,6 @@ def get_analytics(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """
-    Returns all chart-ready data arrays for the admin dashboard.
-    Includes time-series (14 days), cuisine pie, ingredient categories,
-    feedback ratings, top dishes, and top searches.
-    """
     ctx = _build_data_context(db)
     return {
         "daily_recipes":         ctx["daily_recipe_counts"],
@@ -399,7 +393,7 @@ def admin_ask(
         )
         answer = resp.choices[0].message.content.strip()
     except Exception as e:
-        raise HTTPException(502, f"AI service error: {e}")
+        raise HTTPException(502, "AI service temporarily unavailable. Please try again.")
 
     return {
         "answer": answer,
@@ -423,13 +417,11 @@ def get_all_app_feedback(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """List all user app feedback for admin review."""
     q = db.query(AppFeedback)
     if category:
         q = q.filter(AppFeedback.category == category)
     rows = q.order_by(AppFeedback.created_at.desc()).limit(min(limit, 200)).all()
 
-    # Enrich with user email
     result = []
     for fb in rows:
         d = fb.to_dict()
@@ -441,7 +433,6 @@ def get_all_app_feedback(
 
 
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
 # POST /admin/app-feedback/analyse — LLM analysis of all feedback
 # ---------------------------------------------------------------------------
 
@@ -451,16 +442,11 @@ def analyse_app_feedback(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """
-    LLM analysis over all app feedback.
-    Fetches all feedback, passes to GPT-4o with the admin's question.
-    """
     rows = db.query(AppFeedback).order_by(AppFeedback.created_at.desc()).limit(200).all()
 
     if not rows:
         return {"answer": "No feedback submitted yet.", "count": 0}
 
-    # Build compact feedback list for context
     feedback_lines = []
     for fb in rows:
         line = f"[{fb.category.upper()} | {fb.rating}★] {fb.message or '(no message)'}"
@@ -468,7 +454,6 @@ def analyse_app_feedback(
 
     feedback_text = "\n".join(feedback_lines)
 
-    # Rating distribution
     from collections import Counter
     rating_dist = Counter(fb.rating for fb in rows)
     cat_dist    = Counter(fb.category for fb in rows)
@@ -500,12 +485,12 @@ Be specific, cite counts where possible, and give actionable insights."""
         )
         answer = resp.choices[0].message.content.strip()
     except Exception as e:
-        raise HTTPException(502, f"AI service error: {e}")
+        raise HTTPException(502, "AI service temporarily unavailable. Please try again.")
 
     return {
-        "answer":       answer,
-        "count":        len(rows),
-        "avg_rating":   round(avg_rating, 1),
-        "rating_dist":  dict(rating_dist),
+        "answer":        answer,
+        "count":         len(rows),
+        "avg_rating":    round(avg_rating, 1),
+        "rating_dist":   dict(rating_dist),
         "category_dist": dict(cat_dist),
     }

@@ -5,7 +5,7 @@ Run: uvicorn app:app --reload --port 8000  (from backend/ folder)
 Phase 1 changes:
   - All endpoints now require authentication (JWT from Cognito)
   - All data (ingredients, recipes) is scoped to the logged-in user
-  - Recipe generation enforces per-tier limits (free = 3 recipes)
+  - Recipe generation enforces per-tier limits (free = 3 recipes/day)
   - AUTH_DISABLED=true in .env skips auth for local development
 """
 
@@ -17,6 +17,7 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from openai import OpenAI
 from PIL import Image
 
@@ -34,18 +35,17 @@ from prompts import (
     _format_ingredient,
 )
 from prompts import SUGGESTIONS_SYSTEM, SUGGESTIONS_USER, DISH_IDENTIFICATION_SYSTEM, DISH_IDENTIFICATION_USER
-from sqlalchemy import text
+
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
 
 init_db()
 
-# Parse allowed origins from env — supports multiple comma-separated values
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
-app = FastAPI(title="PantryChef API", version="2.3.0")
+app = FastAPI(title="PantryChef API", version="2.4.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -63,11 +63,21 @@ VALID_CATEGORIES = [
 ]
 VALID_RATINGS = ["loved_it", "too_spicy", "too_bland", "too_complex", "other"]
 
-# Per-tier recipe generation limits
+# ---------------------------------------------------------------------------
+# Per-tier daily limits
+# ---------------------------------------------------------------------------
+
 TIER_LIMITS = {
-    "free":    3,
-    "pro":     999_999,
-    "credits": 999_999,   # credits tier uses credits_balance to gate, not count
+    "free":    {"recipe": 3,  "dish_scan": 1,  "pantry_scan": 1,  "chat_tokens": 500,  "variations_per_recipe": 1},
+    "pro":     {"recipe": 20, "dish_scan": 10, "pantry_scan": 10, "chat_tokens": 3000, "variations_per_recipe": 2},
+    "credits": {"recipe": None, "dish_scan": None, "pantry_scan": None, "chat_tokens": 3000, "variations_per_recipe": None},
+}
+
+# Credits cost per action (deducted from credits_balance)
+CREDITS_COST = {
+    "recipe":      1.0,
+    "dish_scan":   2.0,
+    "pantry_scan": 2.0,
 }
 
 
@@ -118,6 +128,10 @@ class AppFeedbackCreate(BaseModel):
     rating: int         # 1–5
     category: str       # general | ui | feature | bug | other
     message: Optional[str] = None
+
+class SuggestionsRequest(BaseModel):
+    filters: dict = {}
+    already_shown: list = []
 
 
 # ---------------------------------------------------------------------------
@@ -304,23 +318,139 @@ def _run_recipe_agent(inventory: list, filters: dict, already_shown: list) -> di
 
 
 # ---------------------------------------------------------------------------
-# ── ME endpoint — current user info + usage stats
+# Guardrail helpers
+# ---------------------------------------------------------------------------
+
+def _get_limit(user: User, key: str):
+    """Return numeric limit for this user+action. None = credits tier (balance-gated)."""
+    limits = TIER_LIMITS.get(user.tier, TIER_LIMITS["free"])
+    return limits.get(key)
+
+
+def _reset_daily(user: User, db: Session, count_col: str, date_col: str) -> None:
+    """Atomically reset a daily counter if 24 h have elapsed."""
+    now = datetime.utcnow()
+    date_val = getattr(user, date_col, None)
+    if date_val is None or (now - date_val).total_seconds() >= 86400:
+        db.execute(
+            text(f"UPDATE users SET {count_col} = 0, {date_col} = :now WHERE id = :uid"),
+            {"now": now, "uid": user.id},
+        )
+        db.commit()
+        db.refresh(user)
+
+
+def _check_and_deduct_credits(user: User, db: Session, action: str) -> None:
+    """For credits-tier users: check balance then deduct. Raises 402 if insufficient."""
+    cost = CREDITS_COST.get(action, 1.0)
+    if user.credits_balance < cost:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error":   "INSUFFICIENT_CREDITS",
+                "message": f"You need {cost} credits for this action. Current balance: {user.credits_balance:.1f}. Please top up.",
+                "balance": user.credits_balance,
+                "cost":    cost,
+            },
+        )
+    db.execute(
+        text("UPDATE users SET credits_balance = credits_balance - :cost WHERE id = :uid"),
+        {"cost": cost, "uid": user.id},
+    )
+    db.commit()
+    db.refresh(user)
+
+
+def _recipe_guardrail(user: User, db: Session) -> None:
+    """Check + atomically reserve one recipe generation slot. Handles all 3 tiers."""
+    if user.is_admin:
+        return
+    if user.tier == "credits":
+        _check_and_deduct_credits(user, db, "recipe")
+        return
+    _reset_daily(user, db, "recipe_count", "recipe_reset_date")
+    limit = _get_limit(user, "recipe")
+    result = db.execute(
+        text("""
+            UPDATE users SET recipe_count = recipe_count + 1
+            WHERE id = :uid AND recipe_count < :lim
+            RETURNING recipe_count
+        """),
+        {"uid": user.id, "lim": limit},
+    ).fetchone()
+    db.commit()
+    if result is None:
+        db.refresh(user)
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error":       "LIMIT_REACHED",
+                "message":     f"You've used all {limit} daily recipes. Resets in 24 hours. Upgrade to Pro for 20/day!",
+                "used":        user.recipe_count,
+                "limit":       limit,
+                "tier":        user.tier,
+                "upgrade_url": "/upgrade",
+            },
+        )
+
+
+def _scan_guardrail(user: User, db: Session, scan_type: str) -> None:
+    """Check + increment scan counter for 'dish' or 'pantry'. Handles all 3 tiers."""
+    if user.is_admin:
+        return
+    if scan_type == "dish":
+        count_col, date_col = "dish_scan_count", "dish_scan_reset_date"
+    else:
+        count_col, date_col = "pantry_scan_count", "pantry_scan_reset_date"
+
+    if user.tier == "credits":
+        _check_and_deduct_credits(user, db, f"{scan_type}_scan")
+    else:
+        _reset_daily(user, db, count_col, date_col)
+        limit = _get_limit(user, f"{scan_type}_scan")
+        current = getattr(user, count_col, 0)
+        if current >= limit:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error":       "SCAN_LIMIT_REACHED",
+                    "message":     f"Daily {scan_type} scan limit ({limit}) reached. Resets in 24 hours.",
+                    "used":        current,
+                    "limit":       limit,
+                    "upgrade_url": "/upgrade",
+                },
+            )
+
+    db.execute(
+        text(f"UPDATE users SET {count_col} = {count_col} + 1 WHERE id = :uid"),
+        {"uid": user.id},
+    )
+    db.commit()
+    db.refresh(user)
+
+
+# ---------------------------------------------------------------------------
+# ME endpoint
 # ---------------------------------------------------------------------------
 
 @app.get("/me")
 def get_me(current_user: User = Depends(get_current_user)):
     """Return the logged-in user's profile and usage info."""
-    limit = TIER_LIMITS.get(current_user.tier, 3)
+    tier_limits = TIER_LIMITS.get(current_user.tier, TIER_LIMITS["free"])
+    recipe_limit = tier_limits.get("recipe") or 0
     return {
         **current_user.to_dict(),
-        "recipe_limit": limit,
-        "recipes_remaining": max(0, limit - current_user.recipe_count),
-        "limit_reached": current_user.recipe_count >= limit and current_user.tier == "free",
+        "recipe_limit":       recipe_limit,
+        "recipes_remaining":  max(0, recipe_limit - current_user.recipe_count),
+        "limit_reached":      current_user.recipe_count >= recipe_limit and current_user.tier != "credits",
+        "dish_scan_limit":    tier_limits.get("dish_scan"),
+        "pantry_scan_limit":  tier_limits.get("pantry_scan"),
+        "chat_token_limit":   tier_limits.get("chat_tokens"),
     }
 
 
 # ---------------------------------------------------------------------------
-# INVENTORY endpoints — all scoped to current_user
+# INVENTORY endpoints
 # ---------------------------------------------------------------------------
 
 @app.get("/inventory")
@@ -396,43 +526,15 @@ def delete_ingredient(
     return None
 
 
-def _reset_scan_if_expired(user: User, db: Session) -> None:
-    """Reset scan_count to 0 if 24 hours have passed since last reset."""
-    now = datetime.utcnow()
-    if user.scan_reset_date is None or (now - user.scan_reset_date).total_seconds() >= 86400:
-        db.execute(
-            text("UPDATE users SET scan_count = 0, scan_reset_date = :now WHERE id = :uid"),
-            {"now": now, "uid": user.id},
-        )
-        db.commit()
-        db.refresh(user)
-
-
-SCAN_LIMITS = {"free": 1, "pro": 20, "credits": 999999}
-
-
 @app.post("/inventory/scan-image")
 async def scan_image(
     payload: ImageScanRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # ── Guardrail: check + increment daily pantry scan counter ───────────────
+    _scan_guardrail(current_user, db, "pantry")
 
-    # ── Reset daily scan window if expired ──────────────────────────────────
-    _reset_scan_if_expired(current_user, db)
-    # ── Scan guardrail ───────────────────────────────────────────────────────
-    scan_limit = SCAN_LIMITS.get(current_user.tier, 1)
-    if not current_user.is_admin and current_user.scan_count >= scan_limit:
-        raise HTTPException(
-            status_code=402,
-            detail={
-                "error":       "SCAN_LIMIT_REACHED",
-                "message":     f"Free tier allows {scan_limit} pantry scan. Upgrade to Pro for unlimited scans.",
-                "used":        current_user.scan_count,
-                "limit":       scan_limit,
-                "upgrade_url": "/upgrade",
-            },
-        )
     # ── Size guard ───────────────────────────────────────────────────────────
     if len(payload.image_b64) > 1_500_000:
         raise HTTPException(400, "Image too large. Please use a smaller image.")
@@ -461,12 +563,6 @@ async def scan_image(
     for item in extracted:
         if item.get("category") not in VALID_CATEGORIES:
             item["category"] = "other"
-    # ── Increment scan counter ───────────────────────────────────────────────
-    db.execute(
-        text("UPDATE users SET scan_count = scan_count + 1 WHERE id = :uid"),
-        {"uid": current_user.id},
-    )
-    db.commit()
     return {"extracted_ingredients": extracted, "count": len(extracted)}
 
 
@@ -477,8 +573,8 @@ async def bulk_import(
     current_user: User = Depends(get_current_user),
 ):
     import csv
-    text = (await file.read()).decode("utf-8-sig").strip()
-    reader = csv.DictReader(io.StringIO(text))
+    content = (await file.read()).decode("utf-8-sig").strip()
+    reader = csv.DictReader(io.StringIO(content))
     imported = skipped = 0
     errors = []
     for i, row in enumerate(reader, 2):
@@ -504,6 +600,72 @@ async def bulk_import(
 
 
 # ---------------------------------------------------------------------------
+# RECIPE SUGGESTIONS
+# ---------------------------------------------------------------------------
+
+@app.post("/recipe/suggestions")
+def get_recipe_suggestions(
+    payload: SuggestionsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Return 6-8 recipe name suggestions based on current pantry.
+    Uses GPT-4o-mini — fast and cheap, no agent loop.
+    Does NOT count against the recipe generation limit.
+    """
+    inventory = [i.to_dict() for i in db.query(Ingredient).filter(
+        Ingredient.user_id == current_user.id).all()]
+
+    if not inventory:
+        raise HTTPException(400, "Your pantry is empty. Add some ingredients first.")
+
+    inventory_json = json.dumps([{"name": i["name"], "category": i["category"]} for i in inventory])
+    filters_json = json.dumps(payload.filters)
+    already_shown = json.dumps(payload.already_shown)
+
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": SUGGESTIONS_SYSTEM},
+                {"role": "user", "content": SUGGESTIONS_USER.format(
+                    inventory_json=inventory_json,
+                    filters_json=filters_json,
+                    already_shown=already_shown,
+                )},
+            ],
+            temperature=0.8,
+            max_tokens=1500,
+        )
+        raw = resp.choices[0].message.content.strip()
+        suggestions = _parse_json_response(raw)
+
+        if not isinstance(suggestions, list):
+            raise ValueError("Expected a list of suggestions")
+
+        valid = []
+        for s in suggestions:
+            if not isinstance(s, dict) or not s.get("name"):
+                continue
+            valid.append({
+                "name": s.get("name", ""),
+                "cuisine": s.get("cuisine", "Indian"),
+                "meal_type": s.get("meal_type", ""),
+                "cook_time_minutes": s.get("cook_time_minutes", None),
+                "difficulty": s.get("difficulty", "beginner"),
+                "key_ingredients": s.get("key_ingredients", []),
+                "missing_count": int(s.get("missing_count", 0)),
+                "reason": s.get("reason", ""),
+            })
+
+        return {"suggestions": valid[:8]}
+
+    except Exception as e:
+        raise HTTPException(500, f"Could not generate suggestions: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
 # RECIPE — Mode A: agent-based pantry generation (WITH GUARDRAIL)
 # ---------------------------------------------------------------------------
 
@@ -515,39 +677,10 @@ def generate_recipe(
 ):
     """
     Generate a recipe from the user's pantry using the AI agent.
-
-    Guardrail: free users are limited to TIER_LIMITS['free'] generations.
-    Increment recipe_count on every successful generation.
+    Guardrail: all tiers limited daily. Free=3, Pro=20, Credits=balance-gated.
     """
     # ── Atomic guardrail — check + reserve in one SQL statement ─────────────
-    limit = TIER_LIMITS.get(current_user.tier, 3)
-    if not current_user.is_admin:
-        result = db.execute(
-            text("""
-                    UPDATE users
-                    SET recipe_count = recipe_count + 1
-                    WHERE id = :uid
-                      AND recipe_count < :lim
-                    RETURNING recipe_count
-                """),
-            {"uid": current_user.id, "lim": limit},
-        ).fetchone()
-        db.commit()
-        if result is None:
-            # Row was NOT updated — user is already at or over the limit
-            db.refresh(current_user)
-            raise HTTPException(
-                status_code=402,
-                detail={
-                    "error": "LIMIT_REACHED",
-                    "message": f"You've used all {limit} free recipe generation{'s' if limit != 1 else ''}. Upgrade to cook more!",
-                    "used": current_user.recipe_count,
-                    "limit": limit,
-                    "tier": current_user.tier,
-                    "upgrade_url": "/upgrade",
-                },
-            )
-        # recipe_count already incremented atomically — skip the old increment below
+    _recipe_guardrail(current_user, db)
 
     inventory = [i.to_dict() for i in db.query(Ingredient).filter(Ingredient.user_id == current_user.id).all()]
     if not inventory:
@@ -588,7 +721,7 @@ def generate_recipe(
             ).choices[0].message.content.strip()
             recipe_data = _parse_json_response(raw)
         except Exception as e:
-            raise HTTPException(502, f"AI service error: {e}")
+            raise HTTPException(502, "AI service temporarily unavailable. Please try again.")
 
     if "error" in recipe_data:
         return {
@@ -613,95 +746,17 @@ def generate_recipe(
         mode="pantry", dish_searched=None,
     )
     db.add(row)
-
-    # ── Increment usage count already done above ──
+    db.commit()
     db.refresh(row)
 
     result = row.to_dict()
     result["from_cache"] = False
-    result["usage"] = {
-          "used":      current_user.recipe_count,
-          "limit":     limit,
-          "remaining": max(0, limit - current_user.recipe_count)
-      }
     result["ingredient_status"] = _map_inventory_to_recipe(recipe_data.get("ingredients_used", []), inventory)
     return result
 
 
 # ---------------------------------------------------------------------------
-# RECIPE SUGGESTIONS — Fast lightweight list using GPT-4o-mini
-# ---------------------------------------------------------------------------
-
-class SuggestionsRequest(BaseModel):
-    filters: dict = {}
-    already_shown: list = []
-
-
-@app.post("/recipe/suggestions")
-def get_recipe_suggestions(
-        payload: SuggestionsRequest,
-        db: Session = Depends(get_db),
-        current_user: User = Depends(get_current_user),
-):
-    """
-    Return 6-8 recipe name suggestions based on current pantry.
-    Uses GPT-4o-mini — fast and cheap, no agent loop.
-    Does NOT count against the recipe generation limit.
-    """
-    inventory = [i.to_dict() for i in db.query(Ingredient).filter(
-        Ingredient.user_id == current_user.id).all()]
-
-    if not inventory:
-        raise HTTPException(400, "Your pantry is empty. Add some ingredients first.")
-
-    inventory_json = json.dumps([{"name": i["name"], "category": i["category"]} for i in inventory])
-    filters_json = json.dumps(payload.filters)
-    already_shown = json.dumps(payload.already_shown)
-
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": SUGGESTIONS_SYSTEM},
-                {"role": "user", "content": SUGGESTIONS_USER.format(
-                    inventory_json=inventory_json,
-                    filters_json=filters_json,
-                    already_shown=already_shown,
-                )},
-            ],
-            temperature=0.8,
-            max_tokens=1500,
-        )
-        raw = resp.choices[0].message.content.strip()
-        suggestions = _parse_json_response(raw)
-
-        if not isinstance(suggestions, list):
-            raise ValueError("Expected a list of suggestions")
-
-        # Validate and sanitise each suggestion
-        valid = []
-        for s in suggestions:
-            if not isinstance(s, dict) or not s.get("name"):
-                continue
-            valid.append({
-                "name": s.get("name", ""),
-                "cuisine": s.get("cuisine", "Indian"),
-                "meal_type": s.get("meal_type", ""),
-                "cook_time_minutes": s.get("cook_time_minutes", None),
-                "difficulty": s.get("difficulty", "beginner"),
-                "key_ingredients": s.get("key_ingredients", []),
-                "missing_count": int(s.get("missing_count", 0)),
-                "reason": s.get("reason", ""),
-            })
-
-        return {"suggestions": valid[:8]}
-
-    except Exception as e:
-        raise HTTPException(500, f"Could not generate suggestions: {str(e)}")
-
-
-# ---------------------------------------------------------------------------
-# RECIPE — Mode B: direct dish search (no guardrail — informational only)
+# RECIPE — Mode B: direct dish search (WITH GUARDRAIL)
 # ---------------------------------------------------------------------------
 
 @app.post("/recipe/search")
@@ -713,6 +768,10 @@ def search_recipe(
     dish = payload.dish_name.strip()
     if not dish:
         raise HTTPException(400, "dish_name is required")
+
+    # ── Guardrail: search counts against daily recipe limit ─────────────────
+    _recipe_guardrail(current_user, db)
+
     inventory = [i.to_dict() for i in db.query(Ingredient).filter(
         Ingredient.user_id == current_user.id).all()]
     try:
@@ -726,7 +785,7 @@ def search_recipe(
         ).choices[0].message.content.strip()
         recipe_data = _parse_json_response(raw)
     except Exception as e:
-        raise HTTPException(502, f"AI service error: {e}")
+        raise HTTPException(502, "AI service temporarily unavailable. Please try again.")
 
     ingredient_status = _map_inventory_to_recipe(
         recipe_data.get("ingredients", []), inventory)
@@ -784,14 +843,6 @@ def get_recipe_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Return the user's recent recipe history as lightweight summaries.
-    Used by ProfileSidebar to show past recipes with load-back option.
-
-    Query params:
-      limit — max number of recipes (default 30, max 50)
-      mode  — filter by 'pantry' or 'direct' (optional)
-    """
     limit = min(limit, 50)
     q = db.query(Recipe).filter(Recipe.user_id == current_user.id)
     if mode in ("pantry", "direct"):
@@ -806,22 +857,9 @@ async def identify_dish(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # ───────────────── Reset daily scan window if expired ───────────────────
-    _reset_scan_if_expired(current_user, db)
+    # ── Guardrail: check + increment daily dish scan counter ─────────────────
+    _scan_guardrail(current_user, db, "dish")
 
-    # ─────────────────────────────── Scan guardrail ──────────────────────────
-    scan_limit = SCAN_LIMITS.get(current_user.tier, 1)
-    if not current_user.is_admin and current_user.scan_count >= scan_limit:
-        raise HTTPException(
-            status_code=402,
-            detail={
-                "error":       "SCAN_LIMIT_REACHED",
-                "message":     f"Free tier allows {scan_limit} dish scan. Upgrade to Pro for unlimited scans.",
-                "used":        current_user.scan_count,
-                "limit":       scan_limit,
-                "upgrade_url": "/upgrade",
-            },
-        )
     if len(payload.image_b64) > 1_500_000:
         raise HTTPException(400, "Image too large. Please use a smaller image.")
 
@@ -844,12 +882,6 @@ async def identify_dish(
         result = _parse_json_response(resp.choices[0].message.content.strip())
         if not isinstance(result, dict) or not result.get("name"):
             return {"name": None, "confidence": "low", "alternatives": [], "cuisine": "", "description": ""}
-            # ── Increment scan counter ───────────────────────────────────────────
-        db.execute(
-            text("UPDATE users SET scan_count = scan_count + 1 WHERE id = :uid"),
-            {"uid": current_user.id},
-        )
-        db.commit()
         return result
     except HTTPException:
         raise
@@ -924,6 +956,87 @@ def submit_feedback(
 
 
 # ---------------------------------------------------------------------------
+# RECIPE — Variations
+# ---------------------------------------------------------------------------
+
+@app.post("/recipe/{recipe_id}/variations")
+def get_recipe_variations(
+    recipe_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate a variation of an existing recipe — different style, same dish."""
+    r = db.query(Recipe).filter(Recipe.id == recipe_id, Recipe.user_id == current_user.id).first()
+    if not r:
+        raise HTTPException(404, "Recipe not found")
+
+    # ── Variation limit per recipe ───────────────────────────────────────────
+    if not current_user.is_admin and current_user.tier != "credits":
+        var_limit = TIER_LIMITS.get(current_user.tier, TIER_LIMITS["free"]).get("variations_per_recipe", 1)
+        existing_variations = db.query(Recipe).filter(
+            Recipe.user_id == current_user.id,
+            Recipe.parent_recipe_id == recipe_id,
+        ).count()
+        if existing_variations >= var_limit:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error":   "VARIATION_LIMIT_REACHED",
+                    "message": f"You've used all {var_limit} variation{'s' if var_limit != 1 else ''} for this recipe. Upgrade for more!",
+                    "used":    existing_variations,
+                    "limit":   var_limit,
+                },
+            )
+
+    # ── Also counts against daily recipe quota ───────────────────────────────
+    _recipe_guardrail(current_user, db)
+
+    original  = json.loads(r.recipe_json)
+    dish_name = original.get("name", r.name)
+    cuisine   = original.get("cuisine", "")
+
+    try:
+        raw = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": MODE_B_SYSTEM},
+                {"role": "user", "content": (
+                    f"Generate a DIFFERENT variation of '{dish_name}'. "
+                    f"Original cuisine: {cuisine}. "
+                    f"Change the cooking style, flavour profile, or regional twist significantly. "
+                    f"Do NOT repeat the original recipe."
+                )},
+            ],
+            temperature=0.9, max_tokens=2500,
+        ).choices[0].message.content.strip()
+        recipe_data = _parse_json_response(raw)
+    except Exception as e:
+        raise HTTPException(502, "AI service temporarily unavailable. Please try again.")
+
+    inventory = [i.to_dict() for i in db.query(Ingredient).filter(
+        Ingredient.user_id == current_user.id).all()]
+    ingredient_status = _map_inventory_to_recipe(recipe_data.get("ingredients", []), inventory)
+    shopping_list = [
+        f"{m['name']} — {m['quantity']}".strip(" —")
+        for m in ingredient_status["missing"]
+    ]
+
+    row = Recipe(
+        user_id=current_user.id,
+        name=recipe_data.get("name", dish_name),
+        recipe_json=json.dumps(recipe_data, ensure_ascii=False),
+        inventory_snapshot=json.dumps(inventory, ensure_ascii=False),
+        mode="direct", dish_searched=dish_name,
+        parent_recipe_id=recipe_id,
+    )
+    db.add(row); db.commit(); db.refresh(row)
+    result = row.to_dict()
+    result["ingredient_status"] = ingredient_status
+    result["shopping_list"] = shopping_list
+    return result
+
+
+# ---------------------------------------------------------------------------
 # COOKING CHAT
 # ---------------------------------------------------------------------------
 
@@ -942,13 +1055,17 @@ def chat_about_recipe(
         if turn.get("role") in ("user", "assistant") and turn.get("content"):
             messages.append({"role": turn["role"], "content": turn["content"]})
     messages.append({"role": "user", "content": payload.message})
+
+    # ── Per-tier token limit ─────────────────────────────────────────────────
+    chat_tokens = TIER_LIMITS.get(current_user.tier, TIER_LIMITS["free"]).get("chat_tokens", 500)
+
     try:
         reply = client.chat.completions.create(
             model="gpt-4o-mini", messages=messages,
-            temperature=0.6, max_tokens=600,
+            temperature=0.6, max_tokens=chat_tokens,
         ).choices[0].message.content.strip()
     except Exception as e:
-        raise HTTPException(502, f"Chat error: {e}")
+        raise HTTPException(502, "Chat service temporarily unavailable. Please try again.")
     return {"reply": reply, "recipe_id": recipe_id}
 
 
@@ -1005,7 +1122,7 @@ def list_user_recipes(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "PantryChef API", "version": "2.3.0"}
+    return {"status": "ok", "service": "PantryChef API", "version": "2.4.0"}
 
 
 # ---------------------------------------------------------------------------
@@ -1020,7 +1137,6 @@ def submit_app_feedback(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Store user feedback about the app itself."""
     if not 1 <= payload.rating <= 5:
         raise HTTPException(400, "Rating must be between 1 and 5")
     cat = payload.category.lower().strip()
@@ -1041,7 +1157,6 @@ def get_my_feedback(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Return the current user's own feedback submissions."""
     rows = db.query(AppFeedback).filter(
         AppFeedback.user_id == current_user.id
     ).order_by(AppFeedback.created_at.desc()).all()

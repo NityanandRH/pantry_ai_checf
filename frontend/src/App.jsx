@@ -81,11 +81,11 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-3 flex-wrap">
-              {user.tier === "free" && (
+              {(user.tier === "free" || user.tier === "pro") && (
                 <div className="text-center rounded-xl px-4 py-2"
                   style={{ background: limitReached ? "rgba(220,50,50,0.3)" : "rgba(255,255,255,0.1)", border: limitReached ? "1px solid rgba(220,50,50,0.5)" : "none" }}>
                   <div className="text-sm font-black text-white leading-none">{recipesUsed}/{recipeLimit}</div>
-                  <div className="text-xs text-orange-200 mt-0.5">{limitReached ? "limit reached" : "free recipes"}</div>
+                  <div className="text-xs text-orange-200 mt-0.5">{limitReached ? "limit reached" : "today's recipes"}</div>
                 </div>
               )}
               <button onClick={() => setActiveTab("pantry")}
@@ -151,10 +151,10 @@ export default function App() {
             style={{ background: "#2e1508", border: "1px solid #7c3a12" }}>
             <div>
               <p className="text-sm font-bold" style={{ color: "#fb923c" }}>
-                🎉 You've used all {recipeLimit} free recipes!
+                🎉 You've used all {recipeLimit} daily recipes!
               </p>
               <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-                Upgrade to Pro (₹99/mo) for unlimited recipe generation.
+                Limit resets in 24 hours. Upgrade to Pro for 20 recipes/day.
               </p>
             </div>
             <button className="btn-orange flex-shrink-0 ml-4" style={{ padding: "0.5rem 1.2rem" }}>

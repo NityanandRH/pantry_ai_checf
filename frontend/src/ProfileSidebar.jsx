@@ -203,10 +203,10 @@ export default function ProfileSidebar({ user, isOpen, onClose, onLoadRecipe, on
                 <div className="grid grid-cols-2 gap-3">
                   {[
                     { label: "Recipes generated", value: user?.recipe_count ?? 0 },
-                    { label: user?.tier === "free" ? "Free recipes left" : "Plan",
-                      value: user?.tier === "free"
-                        ? `${Math.max(0, (user?.recipe_limit ?? 3) - (user?.recipe_count ?? 0))} / ${user?.recipe_limit ?? 3}`
-                        : "Unlimited" },
+                    { label: user?.tier === "credits" ? "Credits balance" : "Recipes left today",
+                      value: user?.tier === "credits"
+                        ? `${user?.credits_balance ?? 0} cr`
+                        : `${Math.max(0, (user?.recipe_limit ?? 3) - (user?.recipe_count ?? 0))} / ${user?.recipe_limit ?? 3}` },
                   ].map(s => (
                     <div key={s.label} className="rounded-xl p-3 text-center"
                       style={{ background: "var(--input-bg)", border: "1px solid var(--card-border)" }}>

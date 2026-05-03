@@ -21,33 +21,39 @@ from database import Base
 class User(Base):
     __tablename__ = "users"
 
-    id               = Column(Integer, primary_key=True, autoincrement=True)
-    cognito_sub      = Column(String(128), unique=True, nullable=False, index=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cognito_sub = Column(String(128), unique=True, nullable=False, index=True)
     # cognito_sub is the unique user ID Cognito assigns — never changes even if email does
 
-    email            = Column(String(255), unique=True, nullable=False, index=True)
-    name             = Column(String(255), nullable=True)
-    picture          = Column(String(500), nullable=True)  # Google profile photo URL
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=True)
+    picture = Column(String(500), nullable=True)  # Google profile photo URL
 
-    tier             = Column(String(20), default="free", nullable=False)
+    tier = Column(String(20), default="free", nullable=False)
     # free | pro | credits
 
-    recipe_count     = Column(Integer, default=0, nullable=False)
+    recipe_count = Column(Integer, default=0, nullable=False)
     # Lifetime count for free tier. Reset monthly for pro (future)
 
-    scan_count       = Column(Integer, default=0, nullable=False)
-    # Lifetime image scans (pantry + dish). Free tier limit = 1 per type enforced server-side..
+    recipe_reset_date = Column(DateTime, nullable=True)
+    # Timestamp of last recipe_count reset. Daily window for all tiers.
 
-    scan_reset_date = Column(DateTime, nullable=True)
+    pantry_scan_count = Column(Integer, default=0, nullable=False)
 
-    credits_balance  = Column(Float, default=0.0, nullable=False)
+    pantry_scan_reset_date = Column(DateTime, nullable=True)
+
+    dish_scan_count = Column(Integer, default=0, nullable=False)
+
+    dish_scan_reset_date = Column(DateTime, nullable=True)
+
+    credits_balance = Column(Float, default=0.0, nullable=False)
     # Only used when tier = 'credits'. Deducted per generation.
 
-    is_admin         = Column(Boolean, default=False, nullable=False)
+    is_admin = Column(Boolean, default=False, nullable=False)
     # Admin users bypass all limits and can see the admin dashboard.
 
-    created_at       = Column(DateTime, default=datetime.utcnow)
-    last_active      = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_active = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     def to_dict(self):
         return {
@@ -57,8 +63,9 @@ class User(Base):
             "picture":        self.picture,
             "tier":           self.tier,
             "recipe_count":   self.recipe_count,
-            "scan_count":     self.scan_count,
-            "credits_balance":round(self.credits_balance, 2),
+            "pantry_scan_count": self.pantry_scan_count,
+            "dish_scan_count":     self.dish_scan_count,
+            "credits_balance": round(self.credits_balance, 2),
             "is_admin":       self.is_admin,
             "created_at":     self.created_at.isoformat() if self.created_at else None,
             "last_active":    self.last_active.isoformat() if self.last_active else None,
