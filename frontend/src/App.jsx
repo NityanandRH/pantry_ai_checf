@@ -69,7 +69,7 @@ export default function App() {
         <div className="w-full px-6 sm:px-10 lg:px-16 py-8 sm:py-10">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
             <div className="flex items-center gap-3">
-              <span className="text-4xl drop-shadow-lg">🍳</span>
+              <span className="text-4xl drop-shadow-lg">🍝</span>
               <div>
                 <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight drop-shadow">
                   PantryChef
@@ -88,10 +88,10 @@ export default function App() {
                   <div className="text-xs text-orange-200 mt-0.5">{limitReached ? "limit reached" : "free recipes"}</div>
                 </div>
               )}
-              <div className="text-center bg-white/10 rounded-xl px-4 py-2">
-                <div className="text-2xl font-black text-white leading-none">{ingredients.length}</div>
-                <div className="text-xs text-orange-200 mt-0.5">ingredients</div>
-              </div>
+              <button onClick={() => setActiveTab("pantry")}
+               className="bg-white/10 hover:bg-white/20 text-white text-xs font-bold px-4 py-2 rounded-xl transition-colors">
+                🥕 {ingredients.length} ingredients
+              </button>
               {expiringCount > 0 && (
                 <button onClick={() => setActiveTab("pantry")}
                   className="bg-amber-500/90 hover:bg-amber-400 text-amber-950 text-xs font-bold px-4 py-2 rounded-xl transition-colors">
@@ -113,9 +113,6 @@ export default function App() {
                     <div className="text-xs font-semibold text-white leading-none">{user.name || user.email}</div>
                     <div className="text-xs text-orange-300 mt-0.5 capitalize">{user.tier}{user.is_admin ? " · admin" : ""}</div>
                   </div>
-                </button>
-                <button onClick={logout} className="text-xs text-white/60 hover:text-white ml-1 transition-colors">
-                  Sign out
                 </button>
               </div>
             </div>

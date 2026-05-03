@@ -33,7 +33,12 @@ class User(Base):
     # free | pro | credits
 
     recipe_count     = Column(Integer, default=0, nullable=False)
-    # Lifetime count for free tier. Reset monthly for pro (future).
+    # Lifetime count for free tier. Reset monthly for pro (future)
+
+    scan_count       = Column(Integer, default=0, nullable=False)
+    # Lifetime image scans (pantry + dish). Free tier limit = 1 per type enforced server-side..
+
+    scan_reset_date = Column(DateTime, nullable=True)
 
     credits_balance  = Column(Float, default=0.0, nullable=False)
     # Only used when tier = 'credits'. Deducted per generation.
@@ -52,6 +57,7 @@ class User(Base):
             "picture":        self.picture,
             "tier":           self.tier,
             "recipe_count":   self.recipe_count,
+            "scan_count":     self.scan_count,
             "credits_balance":round(self.credits_balance, 2),
             "is_admin":       self.is_admin,
             "created_at":     self.created_at.isoformat() if self.created_at else None,

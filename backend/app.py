@@ -34,7 +34,7 @@ from prompts import (
     _format_ingredient,
 )
 from prompts import SUGGESTIONS_SYSTEM, SUGGESTIONS_USER, DISH_IDENTIFICATION_SYSTEM, DISH_IDENTIFICATION_USER
-
+from sqlalchemy import text
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
@@ -396,11 +396,47 @@ def delete_ingredient(
     return None
 
 
+def _reset_scan_if_expired(user: User, db: Session) -> None:
+    """Reset scan_count to 0 if 24 hours have passed since last reset."""
+    now = datetime.utcnow()
+    if user.scan_reset_date is None or (now - user.scan_reset_date).total_seconds() >= 86400:
+        db.execute(
+            text("UPDATE users SET scan_count = 0, scan_reset_date = :now WHERE id = :uid"),
+            {"now": now, "uid": user.id},
+        )
+        db.commit()
+        db.refresh(user)
+
+
+SCAN_LIMITS = {"free": 1, "pro": 20, "credits": 999999}
+
+
 @app.post("/inventory/scan-image")
 async def scan_image(
     payload: ImageScanRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+
+    # ── Reset daily scan window if expired ──────────────────────────────────
+    _reset_scan_if_expired(current_user, db)
+    # ── Scan guardrail ───────────────────────────────────────────────────────
+    scan_limit = SCAN_LIMITS.get(current_user.tier, 1)
+    if not current_user.is_admin and current_user.scan_count >= scan_limit:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error":       "SCAN_LIMIT_REACHED",
+                "message":     f"Free tier allows {scan_limit} pantry scan. Upgrade to Pro for unlimited scans.",
+                "used":        current_user.scan_count,
+                "limit":       scan_limit,
+                "upgrade_url": "/upgrade",
+            },
+        )
+    # ── Size guard ───────────────────────────────────────────────────────────
+    if len(payload.image_b64) > 1_500_000:
+        raise HTTPException(400, "Image too large. Please use a smaller image.")
+
     b64 = payload.image_b64
     resp = client.chat.completions.create(
         model="gpt-4o",
@@ -425,6 +461,12 @@ async def scan_image(
     for item in extracted:
         if item.get("category") not in VALID_CATEGORIES:
             item["category"] = "other"
+    # ── Increment scan counter ───────────────────────────────────────────────
+    db.execute(
+        text("UPDATE users SET scan_count = scan_count + 1 WHERE id = :uid"),
+        {"uid": current_user.id},
+    )
+    db.commit()
     return {"extracted_ingredients": extracted, "count": len(extracted)}
 
 
@@ -477,20 +519,35 @@ def generate_recipe(
     Guardrail: free users are limited to TIER_LIMITS['free'] generations.
     Increment recipe_count on every successful generation.
     """
-    # ── Guardrail check ──────────────────────────────────────────────────────
+    # ── Atomic guardrail — check + reserve in one SQL statement ─────────────
     limit = TIER_LIMITS.get(current_user.tier, 3)
-    if not current_user.is_admin and current_user.recipe_count >= limit:
-        raise HTTPException(
-            status_code=402,
-            detail={
-                "error":       "LIMIT_REACHED",
-                "message":     f"You've used all {limit} free recipe generation{'s' if limit != 1 else ''}. Upgrade to cook more!",
-                "used":        current_user.recipe_count,
-                "limit":       limit,
-                "tier":        current_user.tier,
-                "upgrade_url": "/upgrade",
-            },
-        )
+    if not current_user.is_admin:
+        result = db.execute(
+            text("""
+                    UPDATE users
+                    SET recipe_count = recipe_count + 1
+                    WHERE id = :uid
+                      AND recipe_count < :lim
+                    RETURNING recipe_count
+                """),
+            {"uid": current_user.id, "lim": limit},
+        ).fetchone()
+        db.commit()
+        if result is None:
+            # Row was NOT updated — user is already at or over the limit
+            db.refresh(current_user)
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "LIMIT_REACHED",
+                    "message": f"You've used all {limit} free recipe generation{'s' if limit != 1 else ''}. Upgrade to cook more!",
+                    "used": current_user.recipe_count,
+                    "limit": limit,
+                    "tier": current_user.tier,
+                    "upgrade_url": "/upgrade",
+                },
+            )
+        # recipe_count already incremented atomically — skip the old increment below
 
     inventory = [i.to_dict() for i in db.query(Ingredient).filter(Ingredient.user_id == current_user.id).all()]
     if not inventory:
@@ -557,9 +614,8 @@ def generate_recipe(
     )
     db.add(row)
 
-    # ── Increment usage count ──
-    current_user.recipe_count += 1
-    db.commit(); db.refresh(row)
+    # ── Increment usage count already done above ──
+    db.refresh(row)
 
     result = row.to_dict()
     result["from_cache"] = False
@@ -747,8 +803,28 @@ def get_recipe_history(
 @app.post("/recipe/identify-dish")
 async def identify_dish(
     payload: ImageScanRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # ───────────────── Reset daily scan window if expired ───────────────────
+    _reset_scan_if_expired(current_user, db)
+
+    # ─────────────────────────────── Scan guardrail ──────────────────────────
+    scan_limit = SCAN_LIMITS.get(current_user.tier, 1)
+    if not current_user.is_admin and current_user.scan_count >= scan_limit:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error":       "SCAN_LIMIT_REACHED",
+                "message":     f"Free tier allows {scan_limit} dish scan. Upgrade to Pro for unlimited scans.",
+                "used":        current_user.scan_count,
+                "limit":       scan_limit,
+                "upgrade_url": "/upgrade",
+            },
+        )
+    if len(payload.image_b64) > 1_500_000:
+        raise HTTPException(400, "Image too large. Please use a smaller image.")
+
     b64 = payload.image_b64
     resp = client.chat.completions.create(
         model="gpt-4o",
@@ -768,7 +844,15 @@ async def identify_dish(
         result = _parse_json_response(resp.choices[0].message.content.strip())
         if not isinstance(result, dict) or not result.get("name"):
             return {"name": None, "confidence": "low", "alternatives": [], "cuisine": "", "description": ""}
+            # ── Increment scan counter ───────────────────────────────────────────
+        db.execute(
+            text("UPDATE users SET scan_count = scan_count + 1 WHERE id = :uid"),
+            {"uid": current_user.id},
+        )
+        db.commit()
         return result
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(500, "Could not identify the dish from this image")
 

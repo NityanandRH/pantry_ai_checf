@@ -198,7 +198,7 @@ function SuggestionCard({ suggestion, onCook, loading }) {
   )
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// ──────────────────────────────── Main ────────────────────────────────────────
 export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, onRecipeGenerated, loadRecipeId, onLoadRecipeDone }) {
   const [searchTerm, setSearchTerm]   = useState("")
   const [searchBusy, setSearchBusy]   = useState(false)
@@ -227,17 +227,17 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
   const [showIngStatus, setShowIngStatus] = useState(true)  // hide/show toggle for ingredient check
 
   // Free tier scan tracking (localStorage, resets daily)
-  const canScan = (type) => {
-    if (user?.tier !== "free") return true
-    const key = `pantry_scan_${type}_${new Date().toDateString()}_${user?.id||"u"}`
-    const count = parseInt(localStorage.getItem(key) || "0")
-    if (count >= 1) {
-      flash(`Free tier allows 1 ${type==="pantry" ? "pantry" : "dish"} scan per day — upgrade to Pro for unlimited`, "err")
-      return false
-    }
-    localStorage.setItem(key, count + 1)
-    return true
-  }
+//   const canScan = (type) => {
+//     if (user?.tier !== "free") return true
+//     const key = `pantry_scan_${type}_${new Date().toDateString()}_${user?.id||"u"}`
+//     const count = parseInt(localStorage.getItem(key) || "0")
+//     if (count >= 1) {
+//       flash(`Free tier allows 1 ${type==="pantry" ? "pantry" : "dish"} scan per day — upgrade to Pro for unlimited`, "err")
+//       return false
+//     }
+//     localStorage.setItem(key, count + 1)
+//     return true
+//   }
 
   // Dish image scan state
   const [dishScanBusy, setDishScanBusy]     = useState(false)
@@ -369,10 +369,10 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
     handleGetSuggestions()
   }
 
-  // ── Dish image scan ───────────────────────────────────────────────────────
+  // ────────────────────────────── Dish image scan ───────────────────────────
   const handleDishScan = async (e) => {
     const file = e.target.files[0]; if (!file) return
-    if (!canScan("dish")) { if(dishImgRef.current) dishImgRef.current.value=""; return }
+//     if (!canScan("dish")) { if(dishImgRef.current) dishImgRef.current.value=""; return }
     setDishScanBusy(true); setDishScanResult(null); setError(null)
     try {
       const compressed = await new Promise((resolve, reject) => {
@@ -400,7 +400,14 @@ export default function RecipeBuilder({ ingredients, API, onGoToPantry, user, on
       if (!res.data.name) { flash("Could not identify dish — try a clearer photo", "err"); return }
       setDishScanResult(res.data)
       setDishConfirmName(res.data.name)
-    } catch(e) { flash("Scan failed: "+(e.response?.data?.detail||e.message), "err") }
+    } catch(e) {
+      const detail = e.response?.data?.detail
+      if (e.response?.status === 402 && detail?.error === "SCAN_LIMIT_REACHED") {
+        flash(detail.message || "Scan limit reached. Upgrade to Pro.", "err")
+      } else {
+        setError(detail?.message || detail || "Dish scan failed.")
+      }
+    }
     finally { setDishScanBusy(false); if(dishImgRef.current) dishImgRef.current.value="" }
   }
 

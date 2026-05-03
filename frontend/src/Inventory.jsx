@@ -321,8 +321,14 @@ export default function Inventory({ ingredients, refreshInventory, API }) {
       if (!items.length) { flash("No ingredients detected","err"); return }
       setScanned(items)
       setSelected(Object.fromEntries(items.map((_,i)=>[i,true])))
-    } catch(e) { flash("Scan failed: "+(e.response?.data?.detail||e.message),"err") }
-    finally { setScanning(false); if(imgRef.current) imgRef.current.value="" }
+    } catch(e) {
+      const detail = e.response?.data?.detail
+      if (e.response?.status === 402 && detail?.error === "SCAN_LIMIT_REACHED") {
+        flash(detail.message || "Scan limit reached. Upgrade to Pro.", "err")
+      } else {
+        flash("Scan failed: " + (detail?.message || detail || e.message), "err")
+      }
+    }
   }
 
   const addScanned = async () => {
