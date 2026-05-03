@@ -123,6 +123,7 @@ class Recipe(Base):
     session_id         = Column(String(64), nullable=True, index=True)
     mode               = Column(String(10), nullable=False)
     dish_searched      = Column(String(255), nullable=True)
+    parent_recipe_id = Column(Integer, nullable=True)
     is_favourite       = Column(Boolean, default=False, nullable=False)
     is_user_submitted  = Column(Boolean, default=False, nullable=False)
     generated_at       = Column(DateTime, default=datetime.utcnow)
