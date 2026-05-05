@@ -230,9 +230,9 @@ function PhotoCircleBtn({ tabKey, size, pos, labelPos, delay, onHover, onClick, 
           {/* Button */}
           <button
             onMouseEnter={() => onHover(tabKey)}
-            onMouseLeave={() => onHover(null)}
+            onMouseLeave={() => { onHover(null); setPressed(false) }}
             onMouseDown={() => setPressed(true)}
-            onMouseUp={() => { setPressed(false); onClick() }}
+            onMouseUp={() => setPressed(false)}
             onClick={onClick}
             style={{
               width: "100%", height: "100%",
@@ -362,6 +362,7 @@ export default function Home({ user, ingredients, onNavigate, onSignIn, recipesU
   const [clock, setClock] = useState("")
   const [hoveredTab, setHoveredTab] = useState(null)
   const [showFeatures, setShowFeatures] = useState(false)
+  const [videoFailed, setVideoFailed] = useState(false)  // ← moved to top
   const videoRef = useRef()
   const featuresRef = useRef()
 
@@ -401,7 +402,6 @@ export default function Home({ user, ingredients, onNavigate, onSignIn, recipesU
       }
     }
     setSlowMo()
-    // Retry every 200ms for 3s in case video hasn't loaded yet
     const iv = setInterval(setSlowMo, 200)
     const cleanup = setTimeout(() => clearInterval(iv), 3000)
     return () => { clearInterval(iv); clearTimeout(cleanup) }
@@ -491,13 +491,13 @@ export default function Home({ user, ingredients, onNavigate, onSignIn, recipesU
             style={{
               position: "absolute", inset: 0,
               width: "100%", height: "100%",
-              objectFit: "cover", zIndex: 0,
+              objectFit: "cover", zIndex: 1,
             }}
           >
             <source src="/bg-video.mp4" type="video/mp4"/>
           </video>
 
-          {/* CSS animated bg fallback */}
+          {/* CSS animated bg fallback — behind video */}
           <div style={{
             position: "absolute", inset: 0, zIndex: 0,
             background: `
@@ -510,9 +510,9 @@ export default function Home({ user, ingredients, onNavigate, onSignIn, recipesU
             animation: "driftBg 24s ease-in-out infinite",
           }}/>
 
-          {/* Dark overlay */}
+          {/* Dark overlay — above video */}
           <div style={{
-            position: "absolute", inset: 0, zIndex: 2,
+            position: "absolute", inset: 0, zIndex: 3,
             background: `
               linear-gradient(to bottom, rgba(4,2,1,0.78) 0%, rgba(4,2,1,0.45) 40%, rgba(4,2,1,0.95) 100%),
               radial-gradient(ellipse at 50% 45%, transparent 25%, rgba(0,0,0,0.6) 100%)
@@ -521,17 +521,17 @@ export default function Home({ user, ingredients, onNavigate, onSignIn, recipesU
 
           {/* Grain */}
           <div style={{
-            position: "absolute", inset: "-50%", zIndex: 3, pointerEvents: "none",
+            position: "absolute", inset: "-50%", zIndex: 4, pointerEvents: "none",
             opacity: 0.038, animation: "grain 0.5s steps(2) infinite",
             background: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E")`,
           }}/>
 
           {/* Particles */}
-          <div style={{ position: "absolute", inset: 0, zIndex: 4, pointerEvents: "none", overflow: "hidden" }}>
+          <div style={{ position: "absolute", inset: 0, zIndex: 5, pointerEvents: "none", overflow: "hidden" }}>
             {particles.map((p, i) => <SpiceParticle key={i} emoji={p.emoji} s={p.s}/>)}
           </div>
 
-          {/* Streaming context panels */}
+          {/* Streaming context panels — zIndex 60 so above everything */}
           {isLoggedIn && (["cook","pantry",...(user?.is_admin?["admin"]:[])]).map(key => (
             <ContextPanel key={key} tabKey={key} visible={hoveredTab===key} fromLeft={key==="cook"}/>
           ))}

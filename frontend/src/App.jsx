@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react"
-import { useAuth } from "./useAuth"
+import { useAuth, buildLoginUrl } from "./useAuth"
 import api from "./api"
 import Home from "./Home"
 import Login from "./Login"
@@ -9,6 +9,22 @@ import AdminDashboard from "./AdminDashboard"
 import ProfileSidebar from "./ProfileSidebar"
 
 const API_BASE = import.meta.env.VITE_API_URL || ""
+const AUTH_DISABLED = import.meta.env.VITE_AUTH_DISABLED === "true"
+
+// Works for both local (AUTH_DISABLED=true) and deployed (real Cognito)
+const handleSignIn = () => {
+  if (AUTH_DISABLED) {
+    localStorage.setItem("pantry_chef_token", "dev-bypass-token")
+    window.location.href = "/"
+    return
+  }
+  const url = buildLoginUrl()
+  if (url) {
+    window.location.href = url
+  } else {
+    window.location.href = "/login"
+  }
+}
 
 export default function App() {
   const { user, loading, isAdmin, logout, refreshUser } = useAuth()
@@ -46,14 +62,15 @@ export default function App() {
     )
   }
 
-  // ── Pre-auth landing page (full-screen, no layout) ───────────────────────
+  // ── Pre-auth: show landing page full-screen (no layout) ──────────────────
+  // onSignIn triggers real Cognito OAuth (prod) or dev bypass (local)
   if (!user) {
     return (
       <Home
         user={null}
         ingredients={[]}
         onNavigate={() => {}}
-        onSignIn={() => { window.location.href = "/login" }}
+        onSignIn={handleSignIn}
         recipesUsed={0}
         recipeLimit={3}
         expiringCount={0}
@@ -78,7 +95,7 @@ export default function App() {
     ...(isAdmin ? [{ id: "admin", label: "⚙ Admin" }] : []),
   ]
 
-  // ── Home tab: render FULL SCREEN, completely bypass header/layout ─────────
+  // ── Home tab: full-screen, bypass header/layout entirely ─────────────────
   if (activeTab === "home") {
     return (
       <>
@@ -91,7 +108,6 @@ export default function App() {
           recipeLimit={recipeLimit}
           expiringCount={expiringCount}
         />
-        {/* Profile sidebar still accessible from Home user pill */}
         <ProfileSidebar
           user={{ ...user, recipe_limit: user?.recipe_limit ?? 3 }}
           isOpen={sidebarOpen}
